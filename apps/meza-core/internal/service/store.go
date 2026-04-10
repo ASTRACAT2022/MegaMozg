@@ -51,6 +51,11 @@ func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 	if persistPath != "" {
 		if state, err := loadState(persistPath); err == nil {
 			state, changed := sanitizeSeededDemoState(state)
+			dedupedNodes, removedByIP := deduplicateNodesByIP(state.Nodes)
+			if removedByIP > 0 {
+				state.Nodes = dedupedNodes
+				changed = true
+			}
 			if changed {
 				if err := saveState(persistPath, state); err != nil {
 					return nil, err
@@ -92,10 +97,62 @@ func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now().UTC()
+	normalizedIP := strings.TrimSpace(input.IPAddress)
+	input.Name = strings.TrimSpace(input.Name)
+	input.Region = strings.TrimSpace(input.Region)
+
+	for idx := range s.nodes {
+		if s.nodes[idx].Name != input.Name {
+			continue
+		}
+
+		s.nodes[idx].Region = coalesce(input.Region, s.nodes[idx].Region)
+		s.nodes[idx].Tags = fallbackTags(input.Tags, s.nodes[idx].Tags)
+		s.nodes[idx].Status = "online"
+		s.nodes[idx].IPAddress = coalesce(normalizedIP, s.nodes[idx].IPAddress)
+		s.nodes[idx].LastSeenAt = now
+
+		removed := s.deduplicateNodesByIPLocked("bootstrap-token")
+		s.appendAuditLocked("bootstrap-token", "register", "node", s.nodes[idx].ID, "Node registered", map[string]any{
+			"name":       s.nodes[idx].Name,
+			"region":     s.nodes[idx].Region,
+			"ipAddress":  s.nodes[idx].IPAddress,
+			"duplicates": removed,
+		})
+		s.saveLocked()
+		return s.nodes[idx]
+	}
+
+	if normalizedIP != "" {
+		for idx := range s.nodes {
+			if strings.TrimSpace(s.nodes[idx].IPAddress) != normalizedIP {
+				continue
+			}
+
+			s.nodes[idx].Name = coalesce(input.Name, s.nodes[idx].Name)
+			s.nodes[idx].Region = coalesce(input.Region, s.nodes[idx].Region)
+			s.nodes[idx].Tags = fallbackTags(input.Tags, s.nodes[idx].Tags)
+			s.nodes[idx].Status = "online"
+			s.nodes[idx].IPAddress = normalizedIP
+			s.nodes[idx].LastSeenAt = now
+
+			removed := s.deduplicateNodesByIPLocked("bootstrap-token")
+			s.appendAuditLocked("bootstrap-token", "register", "node", s.nodes[idx].ID, "Node registered", map[string]any{
+				"name":       s.nodes[idx].Name,
+				"region":     s.nodes[idx].Region,
+				"ipAddress":  s.nodes[idx].IPAddress,
+				"duplicates": removed,
+			})
+			s.saveLocked()
+			return s.nodes[idx]
+		}
+	}
+
 	node := domain.Node{
-		ID:        fmt.Sprintf("node-%d", len(s.nodes)+1),
+		ID:        s.nextNodeIDLocked(),
 		Name:      input.Name,
-		IPAddress: strings.TrimSpace(input.IPAddress),
+		IPAddress: normalizedIP,
 		Region:    input.Region,
 		Tags:      input.Tags,
 		Status:    "online",
@@ -107,15 +164,17 @@ func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
 			LoadAverage:    0,
 			ProcessesCount: 0,
 		},
-		LastSeenAt: time.Now().UTC(),
-		CreatedAt:  time.Now().UTC(),
+		LastSeenAt: now,
+		CreatedAt:  now,
 	}
 
 	s.nodes = append(s.nodes, node)
+	removed := s.deduplicateNodesByIPLocked("bootstrap-token")
 	s.appendAuditLocked("bootstrap-token", "register", "node", node.ID, "Node registered", map[string]any{
-		"name":      node.Name,
-		"region":    node.Region,
-		"ipAddress": node.IPAddress,
+		"name":       node.Name,
+		"region":     node.Region,
+		"ipAddress":  node.IPAddress,
+		"duplicates": removed,
 	})
 	s.saveLocked()
 	return node
@@ -125,6 +184,9 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	input.Name = strings.TrimSpace(input.Name)
+	input.Region = strings.TrimSpace(input.Region)
+	input.IPAddress = strings.TrimSpace(input.IPAddress)
 	now := time.Now().UTC()
 	for idx := range s.nodes {
 		if s.nodes[idx].Name == input.Name {
@@ -140,15 +202,41 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 				"status":    s.nodes[idx].Status,
 				"ipAddress": s.nodes[idx].IPAddress,
 			})
+			s.deduplicateNodesByIPLocked("meza-node")
+			s.saveLocked()
+			return s.nodes[idx]
+		}
+	}
+
+	if input.IPAddress != "" {
+		for idx := range s.nodes {
+			if strings.TrimSpace(s.nodes[idx].IPAddress) != input.IPAddress {
+				continue
+			}
+
+			s.nodes[idx].Name = coalesce(input.Name, s.nodes[idx].Name)
+			s.nodes[idx].Region = coalesce(input.Region, s.nodes[idx].Region)
+			s.nodes[idx].Tags = fallbackTags(input.Tags, s.nodes[idx].Tags)
+			s.nodes[idx].Status = coalesce(input.Status, s.nodes[idx].Status)
+			s.nodes[idx].IPAddress = input.IPAddress
+			s.nodes[idx].Metrics = input.Metrics
+			s.nodes[idx].LastSeenAt = now
+
+			s.appendAuditLocked("meza-node", "heartbeat", "node", s.nodes[idx].ID, "Node heartbeat received", map[string]any{
+				"name":      s.nodes[idx].Name,
+				"status":    s.nodes[idx].Status,
+				"ipAddress": s.nodes[idx].IPAddress,
+			})
+			s.deduplicateNodesByIPLocked("meza-node")
 			s.saveLocked()
 			return s.nodes[idx]
 		}
 	}
 
 	node := domain.Node{
-		ID:         fmt.Sprintf("node-%d", len(s.nodes)+1),
+		ID:         s.nextNodeIDLocked(),
 		Name:       input.Name,
-		IPAddress:  strings.TrimSpace(input.IPAddress),
+		IPAddress:  input.IPAddress,
 		Region:     coalesce(input.Region, "unknown-region"),
 		Tags:       input.Tags,
 		Status:     coalesce(input.Status, "online"),
@@ -161,6 +249,7 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 		"name":      node.Name,
 		"ipAddress": node.IPAddress,
 	})
+	s.deduplicateNodesByIPLocked("meza-node")
 	s.saveLocked()
 	return node
 }
@@ -586,6 +675,130 @@ func (s *MemoryStore) nextJobIDLocked() string {
 	}
 
 	return fmt.Sprintf("job-%d", maxID+1)
+}
+
+func (s *MemoryStore) nextNodeIDLocked() string {
+	maxID := 0
+	for _, node := range s.nodes {
+		if !strings.HasPrefix(node.ID, "node-") {
+			continue
+		}
+
+		rawNumber := strings.TrimPrefix(node.ID, "node-")
+		id, err := strconv.Atoi(rawNumber)
+		if err != nil {
+			continue
+		}
+
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	return fmt.Sprintf("node-%d", maxID+1)
+}
+
+func (s *MemoryStore) deduplicateNodesByIPLocked(actor string) int {
+	deduped, removed := deduplicateNodesByIP(s.nodes)
+	if removed == 0 {
+		return 0
+	}
+
+	s.nodes = deduped
+	s.appendAuditLocked(actor, "dedupe", "node", "inventory", "Removed duplicated nodes by ip_address", map[string]any{
+		"removed": removed,
+	})
+	return removed
+}
+
+func deduplicateNodesByIP(nodes []domain.Node) ([]domain.Node, int) {
+	if len(nodes) < 2 {
+		return nodes, 0
+	}
+
+	out := make([]domain.Node, 0, len(nodes))
+	seenByIP := map[string]int{}
+	removed := 0
+
+	for _, node := range nodes {
+		ip := strings.TrimSpace(node.IPAddress)
+		node.IPAddress = ip
+		if ip == "" {
+			out = append(out, node)
+			continue
+		}
+
+		if existingIdx, exists := seenByIP[ip]; exists {
+			kept := pickPreferredNode(out[existingIdx], node)
+			other := node
+			if kept.ID == node.ID {
+				other = out[existingIdx]
+			}
+
+			out[existingIdx] = mergeNodeRecords(kept, other)
+			removed++
+			continue
+		}
+
+		seenByIP[ip] = len(out)
+		out = append(out, node)
+	}
+
+	return out, removed
+}
+
+func pickPreferredNode(left, right domain.Node) domain.Node {
+	if right.LastSeenAt.After(left.LastSeenAt) {
+		return right
+	}
+	if left.LastSeenAt.After(right.LastSeenAt) {
+		return left
+	}
+	if right.CreatedAt.After(left.CreatedAt) {
+		return right
+	}
+	if left.CreatedAt.After(right.CreatedAt) {
+		return left
+	}
+
+	if strings.TrimSpace(right.DisplayName) != "" && strings.TrimSpace(left.DisplayName) == "" {
+		return right
+	}
+	return left
+}
+
+func mergeNodeRecords(primary, secondary domain.Node) domain.Node {
+	merged := primary
+
+	if strings.TrimSpace(merged.DisplayName) == "" {
+		merged.DisplayName = secondary.DisplayName
+	}
+	if strings.TrimSpace(merged.Name) == "" {
+		merged.Name = secondary.Name
+	}
+	if strings.TrimSpace(merged.Region) == "" {
+		merged.Region = secondary.Region
+	}
+	if strings.TrimSpace(merged.Status) == "" {
+		merged.Status = secondary.Status
+	}
+	if len(merged.Tags) == 0 {
+		merged.Tags = secondary.Tags
+	}
+	if merged.Metrics == (domain.NodeMetrics{}) {
+		merged.Metrics = secondary.Metrics
+	}
+	if merged.LastSeenAt.IsZero() {
+		merged.LastSeenAt = secondary.LastSeenAt
+	}
+	if merged.CreatedAt.IsZero() || (!secondary.CreatedAt.IsZero() && secondary.CreatedAt.Before(merged.CreatedAt)) {
+		merged.CreatedAt = secondary.CreatedAt
+	}
+	if strings.TrimSpace(merged.IPAddress) == "" {
+		merged.IPAddress = strings.TrimSpace(secondary.IPAddress)
+	}
+
+	return merged
 }
 
 func (s *MemoryStore) resolveTargetNamesLocked(selector string) []string {

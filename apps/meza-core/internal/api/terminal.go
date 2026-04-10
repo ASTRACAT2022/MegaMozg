@@ -80,9 +80,9 @@ func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
 
 	switch input.Mode {
 	case "ssh_exec":
-		if os.Getenv("MEZA_TERMINAL_SSH_ENABLED") != "true" {
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_ENABLED")), "false") {
 			writeSSE(w, "error", map[string]any{
-				"error":  "ssh_exec disabled. Set MEZA_TERMINAL_SSH_ENABLED=true",
+				"error":  "ssh_exec disabled by env. Set MEZA_TERMINAL_SSH_ENABLED=true",
 				"job_id": job.ID,
 			})
 			flusher.Flush()
