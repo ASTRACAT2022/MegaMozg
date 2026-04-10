@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -192,6 +194,15 @@ func streamSSHExec(ctx context.Context, w io.Writer, flusher http.Flusher, nodeI
 	}
 
 	sshKeyPath := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_KEY_PATH"))
+	if sshKeyPath == "" {
+		sshKeyPath = "/data/ssh/id_ed25519"
+	}
+	if _, err := os.Stat(sshKeyPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("ssh key not found: %s. add private key and set MEZA_TERMINAL_SSH_KEY_PATH", sshKeyPath)
+		}
+		return fmt.Errorf("ssh key access error (%s): %w", sshKeyPath, err)
+	}
 	strictHostKeyChecking := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_STRICT_HOST_KEY_CHECKING"))
 	if strictHostKeyChecking == "" {
 		strictHostKeyChecking = "accept-new"
@@ -201,6 +212,9 @@ func streamSSHExec(ctx context.Context, w io.Writer, flusher http.Flusher, nodeI
 	if userKnownHostsFile == "" {
 		userKnownHostsFile = "/data/ssh/known_hosts"
 	}
+	if err := os.MkdirAll(filepath.Dir(userKnownHostsFile), 0o700); err != nil {
+		return fmt.Errorf("create known_hosts dir failed: %w", err)
+	}
 
 	args := []string{
 		"-p", sshPort,
@@ -209,9 +223,7 @@ func streamSSHExec(ctx context.Context, w io.Writer, flusher http.Flusher, nodeI
 		"-o", fmt.Sprintf("StrictHostKeyChecking=%s", strictHostKeyChecking),
 		"-o", fmt.Sprintf("UserKnownHostsFile=%s", userKnownHostsFile),
 	}
-	if sshKeyPath != "" {
-		args = append(args, "-i", sshKeyPath)
-	}
+	args = append(args, "-i", sshKeyPath)
 
 	target := fmt.Sprintf("%s@%s", sshUser, nodeIP)
 	remoteCommand := fmt.Sprintf("export SYSTEMD_PAGER=cat PAGER=cat; %s", command)
@@ -241,6 +253,7 @@ func streamExecCommand(ctx context.Context, w io.Writer, flusher http.Flusher, c
 	}
 	lines := make(chan streamLine, 64)
 	var wg sync.WaitGroup
+	stderrTail := make([]string, 0, 8)
 
 	readPipe := func(prefix string, pipe io.Reader) {
 		defer wg.Done()
@@ -283,7 +296,7 @@ func streamExecCommand(ctx context.Context, w io.Writer, flusher http.Flusher, c
 		case line, ok := <-lines:
 			if !ok {
 				if err := <-waitErr; err != nil {
-					return fmt.Errorf("command failed: %w", err)
+					return formatExecFailure(err, stderrTail)
 				}
 				writeSSE(w, "line", map[string]any{
 					"line": "[info] command finished",
@@ -293,6 +306,7 @@ func streamExecCommand(ctx context.Context, w io.Writer, flusher http.Flusher, c
 			}
 			text := line.text
 			if line.prefix == "stderr" {
+				stderrTail = appendStderrTail(stderrTail, line.text)
 				text = fmt.Sprintf("[stderr] %s", line.text)
 			}
 			if !rawStdout && line.prefix == "stdout" {
@@ -304,6 +318,42 @@ func streamExecCommand(ctx context.Context, w io.Writer, flusher http.Flusher, c
 			flusher.Flush()
 		}
 	}
+}
+
+func appendStderrTail(tail []string, line string) []string {
+	const maxTail = 6
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return tail
+	}
+	tail = append(tail, line)
+	if len(tail) > maxTail {
+		tail = tail[len(tail)-maxTail:]
+	}
+	return tail
+}
+
+func formatExecFailure(err error, stderrTail []string) error {
+	if err == nil {
+		return nil
+	}
+
+	base := fmt.Sprintf("command failed: %v", err)
+	if len(stderrTail) == 0 {
+		return errors.New(base)
+	}
+
+	hint := ""
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 255 {
+		hint = "SSH failure: проверь user/ip/port, ключ и доступ ноды."
+	}
+
+	joined := strings.Join(stderrTail, " | ")
+	if hint != "" {
+		return fmt.Errorf("%s | %s | stderr: %s", base, hint, joined)
+	}
+	return fmt.Errorf("%s | stderr: %s", base, joined)
 }
 
 func findTerminalNode(nodes []domain.Node, selector string) (domain.Node, bool) {
