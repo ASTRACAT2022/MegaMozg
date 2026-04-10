@@ -12,6 +12,11 @@ type AIConfigurablePlanner interface {
 	CurrentConfig() domain.AIConfig
 }
 
+type AIChatCapablePlanner interface {
+	Planner
+	Chat(prompt string) domain.AIChatResponse
+}
+
 type FallbackPlanner struct {
 	primary  Planner
 	fallback Planner

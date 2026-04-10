@@ -57,3 +57,17 @@ func TestRuntimePlannerAutoEnablesGeminiWhenKeyIsProvided(t *testing.T) {
 		t.Fatalf("expected has_gemini_api_key=true")
 	}
 }
+
+func TestRuntimePlannerChatFallbackReturnsMessage(t *testing.T) {
+	planner := NewRuntimePlanner(RuntimePlannerConfig{
+		Fallback: NewStubPlanner(),
+	})
+
+	reply := planner.Chat("кто ты")
+	if reply.Provider == "" {
+		t.Fatalf("expected provider in chat reply")
+	}
+	if reply.Message == "" {
+		t.Fatalf("expected non-empty message in chat reply")
+	}
+}

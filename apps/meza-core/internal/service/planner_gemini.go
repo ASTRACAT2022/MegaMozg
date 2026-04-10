@@ -70,6 +70,41 @@ func (p *GeminiPlanner) Interpret(prompt string) domain.AIPlannedOperation {
 	return plan
 }
 
+func (p *GeminiPlanner) Chat(prompt string) (string, error) {
+	if strings.TrimSpace(p.apiKey) == "" {
+		return "", fmt.Errorf("gemini api key is empty")
+	}
+
+	requestBody := geminiRequest{
+		SystemInstruction: geminiContent{
+			Parts: []geminiPart{{
+				Text: "You are MezaMozg AI copilot for infrastructure operators. Answer naturally in Russian. Be concise, helpful, and operationally practical. Do not claim that a command was executed unless execution was explicitly requested.",
+			}},
+		},
+		Contents: []geminiContent{{
+			Role: "user",
+			Parts: []geminiPart{{
+				Text: prompt,
+			}},
+		}},
+		GenerationConfig: geminiGenerationConfig{
+			Temperature: 0.6,
+		},
+	}
+
+	parsed, err := p.generate(requestBody)
+	if err != nil {
+		return "", err
+	}
+
+	text := extractGeminiText(parsed)
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("gemini response did not include text")
+	}
+
+	return strings.TrimSpace(text), nil
+}
+
 func (p *GeminiPlanner) plan(prompt string) (domain.AIPlannedOperation, error) {
 	requestBody := geminiRequest{
 		SystemInstruction: geminiContent{
@@ -97,37 +132,8 @@ func (p *GeminiPlanner) plan(prompt string) (domain.AIPlannedOperation, error) {
 		},
 	}
 
-	data, err := json.Marshal(requestBody)
+	parsed, err := p.generate(requestBody)
 	if err != nil {
-		return domain.AIPlannedOperation{}, err
-	}
-
-	url := fmt.Sprintf("%s/models/%s:generateContent", p.baseURL, p.model)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return domain.AIPlannedOperation{}, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", p.apiKey)
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return domain.AIPlannedOperation{}, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return domain.AIPlannedOperation{}, err
-	}
-
-	if resp.StatusCode >= 300 {
-		return domain.AIPlannedOperation{}, fmt.Errorf("gemini returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var parsed geminiResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
 		return domain.AIPlannedOperation{}, err
 	}
 
@@ -157,6 +163,45 @@ func (p *GeminiPlanner) plan(prompt string) (domain.AIPlannedOperation, error) {
 	}
 
 	return plan, nil
+}
+
+func (p *GeminiPlanner) generate(requestBody geminiRequest) (geminiResponse, error) {
+	var parsed geminiResponse
+
+	data, err := json.Marshal(requestBody)
+	if err != nil {
+		return parsed, err
+	}
+
+	url := fmt.Sprintf("%s/models/%s:generateContent", p.baseURL, p.model)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return parsed, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", p.apiKey)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return parsed, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return parsed, err
+	}
+
+	if resp.StatusCode >= 300 {
+		return parsed, fmt.Errorf("gemini returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return parsed, err
+	}
+
+	return parsed, nil
 }
 
 func plannerFunctionDeclaration() geminiFunctionDeclaration {
@@ -219,6 +264,23 @@ func extractGeminiFunctionArgs(resp geminiResponse, name string) (map[string]any
 	}
 
 	return nil, false
+}
+
+func extractGeminiText(resp geminiResponse) string {
+	var collected []string
+	for _, candidate := range resp.Candidates {
+		for _, part := range candidate.Content.Parts {
+			text := strings.TrimSpace(part.Text)
+			if text == "" {
+				continue
+			}
+			collected = append(collected, text)
+		}
+		if len(collected) > 0 {
+			break
+		}
+	}
+	return strings.Join(collected, "\n")
 }
 
 func stringArg(values map[string]any, key string, fallback string) string {

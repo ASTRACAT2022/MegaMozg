@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,53 @@ func (p *RuntimePlanner) CurrentConfig() domain.AIConfig {
 		GeminiBaseURL:   p.geminiBaseURL,
 		HasGeminiAPIKey: strings.TrimSpace(p.geminiAPIKey) != "",
 		UpdatedAt:       p.updatedAt,
+	}
+}
+
+func (p *RuntimePlanner) Chat(prompt string) domain.AIChatResponse {
+	p.mu.RLock()
+	provider := p.provider
+	apiKey := p.geminiAPIKey
+	model := p.geminiModel
+	baseURL := p.geminiBaseURL
+	timeout := p.timeout
+	fallback := p.fallback
+	p.mu.RUnlock()
+
+	if provider == "gemini" && strings.TrimSpace(apiKey) != "" {
+		geminiPlanner := NewGeminiPlanner(GeminiPlannerConfig{
+			APIKey:  apiKey,
+			Model:   model,
+			BaseURL: baseURL,
+			Timeout: timeout,
+		}, fallback)
+		text, err := geminiPlanner.Chat(prompt)
+		if err == nil && strings.TrimSpace(text) != "" {
+			return domain.AIChatResponse{
+				Provider: "gemini",
+				Message:  strings.TrimSpace(text),
+			}
+		}
+	}
+
+	return domain.AIChatResponse{
+		Provider: "stub-chat",
+		Message:  fallbackChatReply(prompt),
+	}
+}
+
+func fallbackChatReply(prompt string) string {
+	normalized := strings.ToLower(strings.TrimSpace(prompt))
+
+	switch {
+	case strings.Contains(normalized, "кто ты"):
+		return "Я AI-агент MezaMozg. Помогаю запускать операции на нодах и контролировать rollout без ручной рутины."
+	case strings.Contains(normalized, "что ты можешь"), strings.Contains(normalized, "можешь"):
+		return "Могу подготовить и запускать задачи: обновление Docker, обновление пакетов, рестарт сервисов, поэтапный rollout и проверка статусов нод."
+	case strings.Contains(normalized, "привет"), strings.Contains(normalized, "hello"), strings.Contains(normalized, "hi"):
+		return "Привет. Напиши, что сделать на инфраструктуре, например: «обнови docker на ноде astra-1»."
+	default:
+		return fmt.Sprintf("Понял запрос: «%s». Если нужна операция, укажи действие и цель: нода/тег/fleet.", strings.TrimSpace(prompt))
 	}
 }
 

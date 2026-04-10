@@ -24,6 +24,11 @@ type ChatOnlyResponse = {
   assistant_message: string;
 };
 
+type CoreAIChatResponse = {
+  provider: string;
+  message: string;
+};
+
 function isConversationalPrompt(input: string) {
   const normalized = input.trim().toLowerCase();
   if (!normalized) return false;
@@ -58,6 +63,12 @@ function isConversationalPrompt(input: string) {
   if (operationPatterns.some((pattern) => normalized.includes(pattern))) {
     return false;
   }
+  if (normalized.endsWith("?") || normalized.endsWith("？")) {
+    return true;
+  }
+  if (normalized.split(/\s+/).length <= 4 && !operationPatterns.some((pattern) => normalized.includes(pattern))) {
+    return true;
+  }
   return chatPatterns.some((pattern) => normalized.includes(pattern));
 }
 
@@ -84,6 +95,22 @@ export async function POST(request: Request) {
 
     const aiConfig = await coreJson<AIConfigResponse>("/api/v1/ai/config");
     if (isConversationalPrompt(body.message)) {
+      try {
+        const chatReply = await coreJson<CoreAIChatResponse>("/api/v1/ai/chat", {
+          method: "POST",
+          body: JSON.stringify({ prompt: body.message }),
+        });
+        return NextResponse.json({
+          session_id: body.session_id ?? "default",
+          plan: null,
+          job: null,
+          executed: false,
+          assistant_message: chatReply.message,
+        });
+      } catch {
+        // fallback to local canned reply if core chat endpoint fails
+      }
+
       return NextResponse.json({
         session_id: body.session_id ?? "default",
         plan: null,

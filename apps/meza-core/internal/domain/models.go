@@ -129,6 +129,11 @@ type AIPlannedOperation struct {
 	JobPreview     JobCreateInput `json:"job_preview"`
 }
 
+type AIChatResponse struct {
+	Provider string `json:"provider"`
+	Message  string `json:"message"`
+}
+
 type NodeRegisterInput struct {
 	Name      string   `json:"name"`
 	Region    string   `json:"region"`

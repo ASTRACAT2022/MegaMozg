@@ -80,6 +80,25 @@ func TestAIConfigEndpoints(t *testing.T) {
 	}
 }
 
+func TestAIChatEndpoint(t *testing.T) {
+	planner := service.NewRuntimePlanner(service.RuntimePlannerConfig{
+		Fallback: service.NewStubPlanner(),
+	})
+	server := NewServer(service.NewMemoryStore(), planner, AuthConfig{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", bytes.NewBufferString(`{"prompt":"кто ты"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected chat 200, got %d", res.Code)
+	}
+	if !bytes.Contains(res.Body.Bytes(), []byte(`"message"`)) {
+		t.Fatalf("expected message in chat response, got %s", res.Body.String())
+	}
+}
+
 func TestJobLifecycleEndpoints(t *testing.T) {
 	server := NewServer(service.NewMemoryStore(), service.NewStubPlanner(), AuthConfig{})
 

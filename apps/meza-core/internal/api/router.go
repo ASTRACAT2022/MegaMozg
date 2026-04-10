@@ -54,6 +54,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/audit", s.requireAuth(scopeOperator, s.handleListAuditEvents))
 	s.mux.HandleFunc("GET /api/v1/ai/config", s.requireAuth(scopeOperator, s.handleAIConfig))
 	s.mux.HandleFunc("POST /api/v1/ai/config", s.requireAuth(scopeOperator, s.handleAIConfigUpdate))
+	s.mux.HandleFunc("POST /api/v1/ai/chat", s.requireAuth(scopeOperator, s.handleAIChat))
 	s.mux.HandleFunc("POST /api/v1/ai/interpret", s.requireAuth(scopeOperator, s.handleAIInterpret))
 	s.mux.HandleFunc("POST /api/v1/ai/plan-and-create", s.requireAuth(scopeOperator, s.handleAIPlanAndCreate))
 }
@@ -270,6 +271,30 @@ func (s *Server) handleAIInterpret(w http.ResponseWriter, r *http.Request) {
 
 	plan := s.planner.Interpret(input.Prompt)
 	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
+	var input domain.AIInterpretRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	if strings.TrimSpace(input.Prompt) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "prompt is required"})
+		return
+	}
+
+	if chatPlanner, ok := s.planner.(service.AIChatCapablePlanner); ok {
+		reply := chatPlanner.Chat(input.Prompt)
+		writeJSON(w, http.StatusOK, reply)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, domain.AIChatResponse{
+		Provider: "stub-chat",
+		Message:  "AI chat временно недоступен. Используй команду вида: «обнови docker на ноде astra-1».",
+	})
 }
 
 func (s *Server) handleAIPlanAndCreate(w http.ResponseWriter, r *http.Request) {
