@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mezamozg/meza-core/internal/domain"
@@ -195,6 +196,53 @@ func TestNodeRegisterCapturesIPAndAllowsDisplayNameUpdate(t *testing.T) {
 	}
 	if !bytes.Contains(updateRes.Body.Bytes(), []byte(`"display_name": "DB Moscow 01"`)) {
 		t.Fatalf("expected display_name in response, got %s", updateRes.Body.String())
+	}
+}
+
+func TestTerminalAgentPollAndResultEndpoints(t *testing.T) {
+	agentExecHub.reset()
+	t.Cleanup(agentExecHub.reset)
+
+	server := NewServer(service.NewMemoryStore(), service.NewStubPlanner(), AuthConfig{
+		NodeToken: "node-token",
+	})
+
+	task := agentExecHub.enqueue("astra-1", "echo hello from node")
+
+	pollReq := httptest.NewRequest(http.MethodPost, "/api/v1/terminal/agent/poll", bytes.NewBufferString(`{"node_name":"astra-1"}`))
+	pollReq.Header.Set("Content-Type", "application/json")
+	pollReq.Header.Set("Authorization", "Bearer node-token")
+	pollRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(pollRes, pollReq)
+
+	if pollRes.Code != http.StatusOK {
+		t.Fatalf("expected poll 200, got %d", pollRes.Code)
+	}
+	if got := pollRes.Header().Get("X-Meza-Task-ID"); got != task.ID {
+		t.Fatalf("expected task id %q, got %q", task.ID, got)
+	}
+	if strings.TrimSpace(pollRes.Body.String()) != "echo hello from node" {
+		t.Fatalf("expected command body, got %q", pollRes.Body.String())
+	}
+
+	resultReq := httptest.NewRequest(http.MethodPost, "/api/v1/terminal/agent/result/"+task.ID+"?status=completed&exit_code=0", bytes.NewBufferString("ok"))
+	resultReq.Header.Set("Authorization", "Bearer node-token")
+	resultRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resultRes, resultReq)
+
+	if resultRes.Code != http.StatusOK {
+		t.Fatalf("expected result 200, got %d", resultRes.Code)
+	}
+
+	snapshot, ok := agentExecHub.get(task.ID)
+	if !ok {
+		t.Fatalf("expected task snapshot to exist")
+	}
+	if snapshot.Status != "completed" {
+		t.Fatalf("expected completed status, got %q", snapshot.Status)
+	}
+	if snapshot.Output != "ok" {
+		t.Fatalf("expected output 'ok', got %q", snapshot.Output)
 	}
 }
 

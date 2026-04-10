@@ -9,9 +9,12 @@ NODE_IP="${MEZA_NODE_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
 TAGS="${MEZA_NODE_TAGS:-}"
 HEARTBEAT_INTERVAL="${MEZA_HEARTBEAT_INTERVAL:-15}"
 HEARTBEAT_STATUS="${MEZA_HEARTBEAT_STATUS:-online}"
+TERMINAL_POLL_INTERVAL="${MEZA_TERMINAL_POLL_INTERVAL:-2}"
 SERVICE_NAME="meza-node-heartbeat"
+EXEC_SERVICE_NAME="meza-node-exec"
 ENV_PATH="/etc/meza-node/node.env"
 BIN_PATH="/usr/local/bin/meza-node-heartbeat"
+EXEC_BIN_PATH="/usr/local/bin/meza-node-exec"
 INSTALL_DIR="${MEZA_NODE_INSTALL_DIR:-/opt/meza-node}"
 
 while [[ $# -gt 0 ]]; do
@@ -91,8 +94,10 @@ curl -fsSL -X POST "${CORE_URL}/api/v1/nodes/register" \
 TMP_ENV="$(mktemp)"
 TMP_BIN="$(mktemp)"
 TMP_SERVICE="$(mktemp)"
+TMP_EXEC_BIN="$(mktemp)"
+TMP_EXEC_SERVICE="$(mktemp)"
 cleanup() {
-  rm -f "${TMP_ENV}" "${TMP_BIN}" "${TMP_SERVICE}"
+  rm -f "${TMP_ENV}" "${TMP_BIN}" "${TMP_SERVICE}" "${TMP_EXEC_BIN}" "${TMP_EXEC_SERVICE}"
 }
 trap cleanup EXIT
 
@@ -105,6 +110,7 @@ NODE_IP="${NODE_IP}"
 TAGS_JSON='${TAGS_JSON}'
 HEARTBEAT_STATUS="${HEARTBEAT_STATUS}"
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL}"
+TERMINAL_POLL_INTERVAL="${TERMINAL_POLL_INTERVAL}"
 EOF
 
 cat >"${TMP_BIN}" <<'EOF'
@@ -317,9 +323,80 @@ while true; do
 done
 EOF
 
+cat >"${TMP_EXEC_BIN}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_FILE="/etc/meza-node/node.env"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "missing ${ENV_FILE}" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${ENV_FILE}"
+
+POLL_INTERVAL="${TERMINAL_POLL_INTERVAL:-2}"
+
+log() {
+  echo "[meza-node-exec] $*" >&2
+}
+
+while true; do
+  HEADERS_FILE="$(mktemp)"
+  BODY_FILE="$(mktemp)"
+  RESULT_FILE="$(mktemp)"
+  cleanup_loop() {
+    rm -f "${HEADERS_FILE}" "${BODY_FILE}" "${RESULT_FILE}"
+  }
+
+  HTTP_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -X POST "${CORE_URL}/api/v1/terminal/agent/poll" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -d "{\"node_name\":\"${NODE_NAME}\"}" \
+    -D "${HEADERS_FILE}" \
+    -o "${BODY_FILE}" \
+    -w "%{http_code}" || true)"
+
+  if [[ "${HTTP_CODE}" == "200" ]]; then
+    TASK_ID="$(awk -F': ' 'tolower($1)=="x-meza-task-id"{gsub("\r","",$2); print $2}' "${HEADERS_FILE}" | head -n1)"
+    COMMAND_TEXT="$(cat "${BODY_FILE}")"
+
+    if [[ -n "${TASK_ID}" && -n "${COMMAND_TEXT}" ]]; then
+      EXIT_CODE=0
+      OUTPUT_TEXT=""
+      if ! OUTPUT_TEXT="$(bash -lc "${COMMAND_TEXT}" 2>&1)"; then
+        EXIT_CODE=$?
+      fi
+
+      printf '%s' "${OUTPUT_TEXT}" > "${RESULT_FILE}"
+      STATUS="completed"
+      if (( EXIT_CODE != 0 )); then
+        STATUS="failed"
+      fi
+
+      if ! curl -sS --connect-timeout 5 --max-time 30 -X POST "${CORE_URL}/api/v1/terminal/agent/result/${TASK_ID}?status=${STATUS}&exit_code=${EXIT_CODE}" \
+        -H "Authorization: Bearer ${AUTH_TOKEN}" \
+        -H "Content-Type: text/plain; charset=utf-8" \
+        --data-binary @"${RESULT_FILE}" >/dev/null; then
+        log "failed to post result: task=${TASK_ID} node=${NODE_NAME}"
+      fi
+    else
+      log "poll returned empty task payload (task_id=${TASK_ID})"
+    fi
+  elif [[ "${HTTP_CODE}" != "204" && -n "${HTTP_CODE}" ]]; then
+    log "poll failed: http=${HTTP_CODE} core=${CORE_URL}"
+  fi
+
+  cleanup_loop
+  sleep "${POLL_INTERVAL}"
+done
+EOF
+
 run_as_root mkdir -p "$(dirname "${ENV_PATH}")" "${INSTALL_DIR}"
 run_as_root install -m 600 "${TMP_ENV}" "${ENV_PATH}"
 run_as_root install -m 755 "${TMP_BIN}" "${BIN_PATH}"
+run_as_root install -m 755 "${TMP_EXEC_BIN}" "${EXEC_BIN_PATH}"
 
 if command -v systemctl >/dev/null 2>&1; then
   cat >"${TMP_SERVICE}" <<EOF
@@ -337,22 +414,47 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+
+  cat >"${TMP_EXEC_SERVICE}" <<EOF
+[Unit]
+Description=Meza-Node terminal execution agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${EXEC_BIN_PATH}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
   run_as_root install -m 644 "${TMP_SERVICE}" "/etc/systemd/system/${SERVICE_NAME}.service"
+  run_as_root install -m 644 "${TMP_EXEC_SERVICE}" "/etc/systemd/system/${EXEC_SERVICE_NAME}.service"
   run_as_root systemctl daemon-reload
   run_as_root systemctl enable "${SERVICE_NAME}.service"
+  run_as_root systemctl enable "${EXEC_SERVICE_NAME}.service"
   run_as_root systemctl restart "${SERVICE_NAME}.service"
+  run_as_root systemctl restart "${EXEC_SERVICE_NAME}.service"
   SERVICE_MODE="systemd"
 else
   LOG_FILE="${INSTALL_DIR}/heartbeat.log"
   PID_FILE="${INSTALL_DIR}/heartbeat.pid"
+  EXEC_LOG_FILE="${INSTALL_DIR}/exec.log"
+  EXEC_PID_FILE="${INSTALL_DIR}/exec.pid"
   if run_as_root test -f "${PID_FILE}"; then
     run_as_root sh -c "kill \$(cat '${PID_FILE}') >/dev/null 2>&1 || true"
   fi
+  if run_as_root test -f "${EXEC_PID_FILE}"; then
+    run_as_root sh -c "kill \$(cat '${EXEC_PID_FILE}') >/dev/null 2>&1 || true"
+  fi
   run_as_root sh -c "nohup '${BIN_PATH}' >> '${LOG_FILE}' 2>&1 & echo \$! > '${PID_FILE}'"
+  run_as_root sh -c "nohup '${EXEC_BIN_PATH}' >> '${EXEC_LOG_FILE}' 2>&1 & echo \$! > '${EXEC_PID_FILE}'"
   SERVICE_MODE="background"
 fi
 
 echo
 echo "Node registered and connected automatically."
-echo "Heartbeat service mode: ${SERVICE_MODE}"
-echo "No extra clicks required. The node now sends heartbeat to the hub."
+echo "Agent service mode: ${SERVICE_MODE}"
+echo "No extra clicks required. The node now sends heartbeat and executes terminal tasks."

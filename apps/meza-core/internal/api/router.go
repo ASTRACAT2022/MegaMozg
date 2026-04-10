@@ -49,6 +49,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/jobs/{id}/start", s.requireAuth(scopeOperator, s.handleStartJob))
 	s.mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.requireAuth(scopeOperator, s.handleDeleteJob))
 	s.mux.HandleFunc("POST /api/v1/terminal/stream", s.requireAuth(scopeOperator, s.handleTerminalStream))
+	s.mux.HandleFunc("POST /api/v1/terminal/agent/poll", s.requireAuthAny([]authScope{scopeNode, scopeBootstrap}, s.handleTerminalAgentPoll))
+	s.mux.HandleFunc("POST /api/v1/terminal/agent/result/{id}", s.requireAuthAny([]authScope{scopeNode, scopeBootstrap}, s.handleTerminalAgentResult))
 	s.mux.HandleFunc("GET /api/v1/audit", s.requireAuth(scopeOperator, s.handleListAuditEvents))
 	s.mux.HandleFunc("GET /api/v1/ai/config", s.requireAuth(scopeOperator, s.handleAIConfig))
 	s.mux.HandleFunc("POST /api/v1/ai/config", s.requireAuth(scopeOperator, s.handleAIConfigUpdate))

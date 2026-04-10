@@ -69,7 +69,7 @@ type TerminalHistoryItem = {
   jobId?: string;
 };
 
-type TerminalExecMode = "ssh_exec" | "job_simulated" | "local_exec";
+type TerminalExecMode = "agent_exec" | "ssh_exec" | "job_simulated" | "local_exec";
 type ThemeMode = "light" | "dark";
 
 type AIConfigFormState = {
@@ -178,7 +178,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
   ]);
   const [terminalNode, setTerminalNode] = useState(initialState.nodes[0]?.name ?? "argentina-17");
   const [terminalCommand, setTerminalCommand] = useState("sudo systemctl status docker");
-  const [terminalMode, setTerminalMode] = useState<TerminalExecMode>("ssh_exec");
+  const [terminalMode, setTerminalMode] = useState<TerminalExecMode>("agent_exec");
   const [terminalHistory, setTerminalHistory] = useState<TerminalHistoryItem[]>([]);
   const [isTerminalRunning, setIsTerminalRunning] = useState(false);
   const [terminalLiveOutput, setTerminalLiveOutput] = useState<string>("");
@@ -622,11 +622,11 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                   variant="outline"
                   onClick={() => {
                     setActiveTab("terminal");
-                    setStatusText("Открыт ручной SSH-терминал.");
+                    setStatusText("Открыт ручной терминал.");
                   }}
                 >
                   <Terminal className="size-4" />
-                  SSH Терминал
+                  Терминал
                 </Button>
                 <Button
                   onClick={() => {
@@ -667,7 +667,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
             <TabsTrigger value="overview">Обзор</TabsTrigger>
             <TabsTrigger value="nodes">Ноды</TabsTrigger>
             <TabsTrigger value="jobs">Задачи</TabsTrigger>
-            <TabsTrigger value="terminal">SSH Терминал</TabsTrigger>
+            <TabsTrigger value="terminal">Терминал</TabsTrigger>
             <TabsTrigger value="agent">AI Агент</TabsTrigger>
             <TabsTrigger value="alerts">Алерты и аудит</TabsTrigger>
           </TabsList>
@@ -982,10 +982,10 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <Terminal className="size-4 text-muted-foreground" />
-                    Ручной SSH терминал
+                    Ручной терминал ноды
                   </CardTitle>
                   <CardDescription>
-                    Команда отправляется как `shell_command` job на выбранную ноду.
+                    Команда отправляется на выбранную ноду и вывод возвращается в панель.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -1021,6 +1021,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                       value={terminalMode}
                       onChange={(event) => setTerminalMode(event.target.value as TerminalExecMode)}
                     >
+                      <option value="agent_exec">agent_exec (без SSH ключа, через Meza-Node агент)</option>
                       <option value="ssh_exec">ssh_exec (реальный SSH на выбранную ноду)</option>
                       <option value="local_exec">local_exec (выполняет команду внутри контейнера meza-core)</option>
                       <option value="job_simulated">job_simulated (демо-режим без реального выполнения)</option>

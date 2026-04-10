@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,34 @@ type terminalStreamRequest struct {
 	NodeName string `json:"node_name"`
 	Command  string `json:"command"`
 	Mode     string `json:"mode"`
+}
+
+type terminalAgentPollRequest struct {
+	NodeName string `json:"node_name"`
+}
+
+type terminalAgentTask struct {
+	ID        string
+	NodeName  string
+	Command   string
+	Status    string
+	Output    string
+	Error     string
+	ExitCode  int
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type terminalAgentHub struct {
+	mu     sync.Mutex
+	seq    int64
+	byID   map[string]*terminalAgentTask
+	queues map[string][]string
+}
+
+var agentExecHub = &terminalAgentHub{
+	byID:   map[string]*terminalAgentTask{},
+	queues: map[string][]string{},
 }
 
 func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +70,7 @@ func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
 	input.Command = strings.TrimSpace(input.Command)
 	input.Mode = strings.TrimSpace(input.Mode)
 	if input.Mode == "" {
-		input.Mode = "ssh_exec"
+		input.Mode = "agent_exec"
 	}
 
 	if input.NodeName == "" || input.Command == "" {
@@ -81,6 +110,21 @@ func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	switch input.Mode {
+	case "agent_exec":
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("MEZA_TERMINAL_AGENT_EXEC_ENABLED")), "false") {
+			writeSSE(w, "error", map[string]any{
+				"error":  "agent_exec disabled by env. Set MEZA_TERMINAL_AGENT_EXEC_ENABLED=true",
+				"job_id": job.ID,
+			})
+			flusher.Flush()
+			return
+		}
+
+		if err := s.streamAgentExec(r.Context(), w, flusher, input.NodeName, input.Command); err != nil {
+			writeSSE(w, "error", map[string]any{"error": err.Error(), "job_id": job.ID})
+			flusher.Flush()
+			return
+		}
 	case "ssh_exec":
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_ENABLED")), "false") {
 			writeSSE(w, "error", map[string]any{
@@ -155,6 +199,151 @@ func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
 		"job_id": job.ID,
 	})
 	flusher.Flush()
+}
+
+func (s *Server) handleTerminalAgentPoll(w http.ResponseWriter, r *http.Request) {
+	var input terminalAgentPollRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	nodeName := strings.TrimSpace(input.NodeName)
+	if nodeName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_name is required"})
+		return
+	}
+
+	task, ok := agentExecHub.claim(nodeName)
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("X-Meza-Task-ID", task.ID)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, task.Command)
+}
+
+func (s *Server) handleTerminalAgentResult(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.PathValue("id"))
+	if taskID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "task id is required"})
+		return
+	}
+
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = "completed"
+	}
+
+	exitCode := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("exit_code")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			exitCode = parsed
+		}
+	}
+
+	nodeName := strings.TrimSpace(r.URL.Query().Get("node_name"))
+	errText := strings.TrimSpace(r.URL.Query().Get("error"))
+
+	rawOutput, _ := io.ReadAll(io.LimitReader(r.Body, 2*1024*1024))
+	output := string(rawOutput)
+
+	if err := agentExecHub.complete(taskID, nodeName, status, exitCode, output, errText); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) streamAgentExec(ctx context.Context, w io.Writer, flusher http.Flusher, nodeName, command string) error {
+	node, found := findTerminalNode(s.store.ListNodes(), nodeName)
+	if !found {
+		return fmt.Errorf("node %q not found", nodeName)
+	}
+
+	task := agentExecHub.enqueue(node.Name, command)
+	writeSSE(w, "line", map[string]any{
+		"line": fmt.Sprintf("[info] agent_exec: queued task %s for %s", task.ID, node.Name),
+	})
+	flusher.Flush()
+
+	timeoutSeconds := 180
+	if raw := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_AGENT_TIMEOUT_SECONDS")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			timeoutSeconds = parsed
+		}
+	}
+
+	timeout := time.NewTimer(time.Duration(timeoutSeconds) * time.Second)
+	defer timeout.Stop()
+	poll := time.NewTicker(1 * time.Second)
+	defer poll.Stop()
+
+	lastStatus := ""
+	waitTicks := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout.C:
+			_ = agentExecHub.complete(task.ID, task.NodeName, "failed", 124, "", "agent_exec timeout")
+			return fmt.Errorf("agent_exec timeout after %ds: node %s did not return result", timeoutSeconds, task.NodeName)
+		case <-poll.C:
+			current, ok := agentExecHub.get(task.ID)
+			if !ok {
+				return errors.New("agent_exec task disappeared")
+			}
+
+			if current.Status != lastStatus {
+				lastStatus = current.Status
+				writeSSE(w, "line", map[string]any{
+					"line": fmt.Sprintf("[info] agent_exec: status=%s", current.Status),
+				})
+				flusher.Flush()
+			}
+
+			if current.Status == "pending" {
+				waitTicks++
+				if waitTicks%5 == 0 {
+					writeSSE(w, "line", map[string]any{
+						"line": fmt.Sprintf("[info] waiting node %s to pick task...", current.NodeName),
+					})
+					flusher.Flush()
+				}
+				continue
+			}
+
+			if current.Status == "running" {
+				continue
+			}
+
+			output := strings.TrimSpace(current.Output)
+			if output != "" {
+				for _, line := range strings.Split(output, "\n") {
+					writeSSE(w, "line", map[string]any{"line": line})
+					flusher.Flush()
+				}
+			}
+
+			if current.Status == "failed" || current.ExitCode != 0 {
+				errText := strings.TrimSpace(current.Error)
+				if errText == "" {
+					errText = "command failed on node"
+				}
+				return fmt.Errorf("%s (exit=%d)", errText, current.ExitCode)
+			}
+
+			if output == "" {
+				writeSSE(w, "line", map[string]any{"line": "[info] command finished (empty output)"})
+				flusher.Flush()
+			}
+			return nil
+		}
+	}
 }
 
 func streamSimulatedOutput(ctx context.Context, w io.Writer, flusher http.Flusher, input terminalStreamRequest) {
@@ -354,6 +543,88 @@ func formatExecFailure(err error, stderrTail []string) error {
 		return fmt.Errorf("%s | %s | stderr: %s", base, hint, joined)
 	}
 	return fmt.Errorf("%s | stderr: %s", base, joined)
+}
+
+func (h *terminalAgentHub) enqueue(nodeName, command string) terminalAgentTask {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.seq++
+	now := time.Now().UTC()
+	id := fmt.Sprintf("agent-task-%d", h.seq)
+	task := &terminalAgentTask{
+		ID:        id,
+		NodeName:  nodeName,
+		Command:   command,
+		Status:    "pending",
+		ExitCode:  0,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	h.byID[id] = task
+	h.queues[nodeName] = append(h.queues[nodeName], id)
+	return *task
+}
+
+func (h *terminalAgentHub) claim(nodeName string) (terminalAgentTask, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	queue := h.queues[nodeName]
+	if len(queue) == 0 {
+		return terminalAgentTask{}, false
+	}
+
+	id := queue[0]
+	h.queues[nodeName] = queue[1:]
+	task, ok := h.byID[id]
+	if !ok {
+		return terminalAgentTask{}, false
+	}
+
+	task.Status = "running"
+	task.UpdatedAt = time.Now().UTC()
+	return *task, true
+}
+
+func (h *terminalAgentHub) complete(taskID, nodeName, status string, exitCode int, output, errText string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	task, ok := h.byID[taskID]
+	if !ok {
+		return errors.New("terminal task not found")
+	}
+	if nodeName != "" && task.NodeName != nodeName {
+		return fmt.Errorf("task belongs to node %s, got %s", task.NodeName, nodeName)
+	}
+
+	task.Status = status
+	task.ExitCode = exitCode
+	task.Output = output
+	task.Error = errText
+	task.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (h *terminalAgentHub) get(taskID string) (terminalAgentTask, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	task, ok := h.byID[taskID]
+	if !ok {
+		return terminalAgentTask{}, false
+	}
+	return *task, true
+}
+
+func (h *terminalAgentHub) reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seq = 0
+	h.byID = map[string]*terminalAgentTask{}
+	h.queues = map[string][]string{}
 }
 
 func findTerminalNode(nodes []domain.Node, selector string) (domain.Node, bool) {
