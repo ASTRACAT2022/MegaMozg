@@ -10,6 +10,7 @@ COPY apps/meza-panel/components ./components
 COPY apps/meza-panel/lib ./lib
 COPY apps/meza-panel/next-env.d.ts ./
 COPY apps/meza-panel/next.config.ts ./
+COPY apps/meza-panel/postcss.config.mjs ./
 COPY apps/meza-panel/tsconfig.json ./
 
 RUN npm run build
@@ -27,6 +28,7 @@ COPY --from=builder /app/app ./app
 COPY --from=builder /app/components ./components
 COPY --from=builder /app/lib ./lib
 COPY --from=builder /app/next.config.ts ./next.config.ts
+COPY --from=builder /app/postcss.config.mjs ./postcss.config.mjs
 
 EXPOSE 3000
 
