@@ -15,11 +15,82 @@ type PlanAndCreateResponse = {
   job: JobItem;
 };
 
+type AIConfigResponse = {
+  provider: string;
+  has_gemini_api_key: boolean;
+};
+
+type ChatOnlyResponse = {
+  assistant_message: string;
+};
+
+function isConversationalPrompt(input: string) {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return false;
+
+  const chatPatterns = [
+    "hi",
+    "hello",
+    "привет",
+    "здравствуй",
+    "что ты можешь",
+    "кто ты",
+    "help",
+    "помощь",
+  ];
+
+  const operationPatterns = [
+    "обнов",
+    "перезап",
+    "restart",
+    "update",
+    "docker",
+    "apt",
+    "sudo",
+    "systemctl",
+    "service",
+    "на ноде",
+    "node:",
+    "tag:",
+    "fleet",
+  ];
+
+  if (operationPatterns.some((pattern) => normalized.includes(pattern))) {
+    return false;
+  }
+  return chatPatterns.some((pattern) => normalized.includes(pattern));
+}
+
+function buildChatOnlyReply(config: AIConfigResponse): ChatOnlyResponse {
+  if (config.provider === "gemini" && config.has_gemini_api_key) {
+    return {
+      assistant_message:
+        "Я могу создавать и запускать задачи на нодах: обновление Docker, apt refresh, restart сервисов, rolling rollout. Напиши цель в формате: «обнови docker на ноде astra-1».",
+    };
+  }
+
+  return {
+    assistant_message:
+      "Сейчас AI работает в fallback режиме. Вкладка «AI Агент» -> «Настройки AI (Gemini)»: укажи API key и сохрани. После этого смогу полноценно планировать задачи.",
+  };
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as ChatRequestBody;
     if (!body.message || !body.message.trim()) {
       return NextResponse.json({ error: "message is required" }, { status: 400 });
+    }
+
+    const aiConfig = await coreJson<AIConfigResponse>("/api/v1/ai/config");
+    if (isConversationalPrompt(body.message)) {
+      return NextResponse.json({
+        session_id: body.session_id ?? "default",
+        plan: null,
+        job: null,
+        executed: false,
+        assistant_message: buildChatOnlyReply(aiConfig).assistant_message,
+      });
     }
 
     const planResult = await coreJson<PlanAndCreateResponse>("/api/v1/ai/plan-and-create", {
@@ -62,4 +133,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

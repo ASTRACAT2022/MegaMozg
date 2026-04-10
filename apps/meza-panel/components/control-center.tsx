@@ -36,8 +36,8 @@ type PanelState = PanelData & { alerts: AlertItem[] };
 
 type ChatReply = {
   session_id: string;
-  plan: AIPlanResult;
-  job: JobItem;
+  plan: AIPlanResult | null;
+  job: JobItem | null;
   executed: boolean;
   assistant_message: string;
 };
@@ -387,11 +387,15 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
           id: `${Date.now()}-a`,
           role: "assistant",
           text: reply.assistant_message,
-          plan: reply.plan,
-          job: reply.job,
+          plan: reply.plan ?? undefined,
+          job: reply.job ?? undefined,
         },
       ]);
-      setStatusText(reply.executed ? `AI-агент создал и запустил ${reply.job.id}.` : `AI-агент создал ${reply.job.id}.`);
+      if (reply.job) {
+        setStatusText(reply.executed ? `AI-агент создал и запустил ${reply.job.id}.` : `AI-агент создал ${reply.job.id}.`);
+      } else {
+        setStatusText("AI-агент ответил в режиме чата.");
+      }
       await refreshState();
       setActiveTab("agent");
     } catch (error) {

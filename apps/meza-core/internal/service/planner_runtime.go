@@ -124,6 +124,14 @@ func (p *RuntimePlanner) CurrentConfig() domain.AIConfig {
 
 func normalizeAISettings(settings domain.AISettings) domain.AISettings {
 	provider := strings.ToLower(strings.TrimSpace(settings.Provider))
+	hasGeminiKey := strings.TrimSpace(settings.GeminiAPIKey) != ""
+	if provider != "gemini" {
+		if hasGeminiKey {
+			provider = "gemini"
+		} else {
+			provider = domain.DefaultAIProvider
+		}
+	}
 	if provider != "gemini" {
 		provider = domain.DefaultAIProvider
 	}

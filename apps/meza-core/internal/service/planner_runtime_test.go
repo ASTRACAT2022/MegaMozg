@@ -38,3 +38,22 @@ func TestRuntimePlannerCurrentConfigReflectsAppliedSettings(t *testing.T) {
 		t.Fatalf("expected has_gemini_api_key=true")
 	}
 }
+
+func TestRuntimePlannerAutoEnablesGeminiWhenKeyIsProvided(t *testing.T) {
+	planner := NewRuntimePlanner(RuntimePlannerConfig{
+		Fallback: NewStubPlanner(),
+	})
+
+	planner.ApplySettings(domain.AISettings{
+		Provider:     "stub",
+		GeminiAPIKey: "gemini-key",
+	})
+
+	cfg := planner.CurrentConfig()
+	if cfg.Provider != "gemini" {
+		t.Fatalf("expected provider gemini when key exists, got %q", cfg.Provider)
+	}
+	if !cfg.HasGeminiAPIKey {
+		t.Fatalf("expected has_gemini_api_key=true")
+	}
+}
