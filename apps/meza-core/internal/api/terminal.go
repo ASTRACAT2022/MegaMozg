@@ -39,7 +39,7 @@ func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
 	input.Command = strings.TrimSpace(input.Command)
 	input.Mode = strings.TrimSpace(input.Mode)
 	if input.Mode == "" {
-		input.Mode = "job_simulated"
+		input.Mode = "ssh_exec"
 	}
 
 	if input.NodeName == "" || input.Command == "" {
@@ -78,10 +78,58 @@ func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
 	})
 	flusher.Flush()
 
-	shouldRunLocalExec := input.Mode == "local_exec" && os.Getenv("MEZA_TERMINAL_LOCAL_EXEC_ENABLED") == "true"
-	if shouldRunLocalExec {
+	switch input.Mode {
+	case "ssh_exec":
+		if os.Getenv("MEZA_TERMINAL_SSH_ENABLED") != "true" {
+			writeSSE(w, "error", map[string]any{
+				"error":  "ssh_exec disabled. Set MEZA_TERMINAL_SSH_ENABLED=true",
+				"job_id": job.ID,
+			})
+			flusher.Flush()
+			return
+		}
+
+		node, found := findTerminalNode(s.store.ListNodes(), input.NodeName)
+		if !found {
+			writeSSE(w, "error", map[string]any{
+				"error":  fmt.Sprintf("node %q not found", input.NodeName),
+				"job_id": job.ID,
+			})
+			flusher.Flush()
+			return
+		}
+
+		nodeIP := strings.TrimSpace(node.IPAddress)
+		if nodeIP == "" {
+			writeSSE(w, "error", map[string]any{
+				"error":  fmt.Sprintf("node %q has no ip_address. Reinstall/reconnect node to publish IP.", node.Name),
+				"job_id": job.ID,
+			})
+			flusher.Flush()
+			return
+		}
+
 		writeSSE(w, "line", map[string]any{
-			"line": "[info] local_exec enabled: command runs on meza-core host (not remote node)",
+			"line": fmt.Sprintf("[info] ssh_exec: connecting to %s (%s)", node.Name, nodeIP),
+		})
+		flusher.Flush()
+		if err := streamSSHExec(r.Context(), w, flusher, nodeIP, input.Command); err != nil {
+			writeSSE(w, "error", map[string]any{"error": err.Error(), "job_id": job.ID})
+			flusher.Flush()
+			return
+		}
+	case "local_exec":
+		if os.Getenv("MEZA_TERMINAL_LOCAL_EXEC_ENABLED") != "true" {
+			writeSSE(w, "error", map[string]any{
+				"error":  "local_exec disabled. Set MEZA_TERMINAL_LOCAL_EXEC_ENABLED=true",
+				"job_id": job.ID,
+			})
+			flusher.Flush()
+			return
+		}
+
+		writeSSE(w, "line", map[string]any{
+			"line": "[info] local_exec: command runs on meza-core container",
 		})
 		flusher.Flush()
 		if err := streamLocalExec(r.Context(), w, flusher, input.Command); err != nil {
@@ -89,14 +137,15 @@ func (s *Server) handleTerminalStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			return
 		}
-	} else {
-		if input.Mode == "local_exec" {
-			writeSSE(w, "line", map[string]any{
-				"line": "[warn] local_exec disabled by MEZA_TERMINAL_LOCAL_EXEC_ENABLED=false, fallback to simulated output",
-			})
-			flusher.Flush()
-		}
+	case "job_simulated":
 		streamSimulatedOutput(r.Context(), w, flusher, input)
+	default:
+		writeSSE(w, "error", map[string]any{
+			"error":  fmt.Sprintf("unknown terminal mode: %s", input.Mode),
+			"job_id": job.ID,
+		})
+		flusher.Flush()
+		return
 	}
 
 	writeSSE(w, "done", map[string]any{
@@ -128,6 +177,51 @@ func streamSimulatedOutput(ctx context.Context, w io.Writer, flusher http.Flushe
 
 func streamLocalExec(ctx context.Context, w io.Writer, flusher http.Flusher, command string) error {
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-lc", command)
+	return streamExecCommand(ctx, w, flusher, cmd, false)
+}
+
+func streamSSHExec(ctx context.Context, w io.Writer, flusher http.Flusher, nodeIP, command string) error {
+	sshUser := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_USER"))
+	if sshUser == "" {
+		sshUser = "root"
+	}
+
+	sshPort := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_PORT"))
+	if sshPort == "" {
+		sshPort = "22"
+	}
+
+	sshKeyPath := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_KEY_PATH"))
+	strictHostKeyChecking := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_STRICT_HOST_KEY_CHECKING"))
+	if strictHostKeyChecking == "" {
+		strictHostKeyChecking = "accept-new"
+	}
+
+	userKnownHostsFile := strings.TrimSpace(os.Getenv("MEZA_TERMINAL_SSH_KNOWN_HOSTS_PATH"))
+	if userKnownHostsFile == "" {
+		userKnownHostsFile = "/data/ssh/known_hosts"
+	}
+
+	args := []string{
+		"-p", sshPort,
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=15",
+		"-o", fmt.Sprintf("StrictHostKeyChecking=%s", strictHostKeyChecking),
+		"-o", fmt.Sprintf("UserKnownHostsFile=%s", userKnownHostsFile),
+	}
+	if sshKeyPath != "" {
+		args = append(args, "-i", sshKeyPath)
+	}
+
+	target := fmt.Sprintf("%s@%s", sshUser, nodeIP)
+	remoteCommand := fmt.Sprintf("export SYSTEMD_PAGER=cat PAGER=cat; %s", command)
+	args = append(args, target, remoteCommand)
+
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	return streamExecCommand(ctx, w, flusher, cmd, true)
+}
+
+func streamExecCommand(ctx context.Context, w io.Writer, flusher http.Flusher, cmd *exec.Cmd, rawStdout bool) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)
@@ -197,12 +291,28 @@ func streamLocalExec(ctx context.Context, w io.Writer, flusher http.Flusher, com
 				flusher.Flush()
 				return nil
 			}
+			text := line.text
+			if line.prefix == "stderr" {
+				text = fmt.Sprintf("[stderr] %s", line.text)
+			}
+			if !rawStdout && line.prefix == "stdout" {
+				text = fmt.Sprintf("[stdout] %s", line.text)
+			}
 			writeSSE(w, "line", map[string]any{
-				"line": fmt.Sprintf("[%s] %s", line.prefix, line.text),
+				"line": text,
 			})
 			flusher.Flush()
 		}
 	}
+}
+
+func findTerminalNode(nodes []domain.Node, selector string) (domain.Node, bool) {
+	for _, node := range nodes {
+		if node.Name == selector || node.DisplayName == selector || node.ID == selector {
+			return node, true
+		}
+	}
+	return domain.Node{}, false
 }
 
 func writeSSE(w io.Writer, event string, payload any) {

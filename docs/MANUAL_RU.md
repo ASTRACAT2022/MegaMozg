@@ -168,10 +168,21 @@ bash scripts/install-node.sh --token prod-bootstrap-token --core-url http://127.
 - Ставит heartbeat-агент как сервис (systemd) или фоновый процесс.
 - Сразу запускает авто-подключение к хабу без дополнительных кликов.
 
-### Примечание по режиму `local_exec` в терминале
+### Примечание по режимам терминала
 
-По умолчанию включён безопасный `job_simulated`.
-Если нужен режим выполнения команды на самом хосте `meza-core`, выставь:
+По умолчанию в панели выбран `ssh_exec` — это реальный SSH на выбранную ноду с live-выводом.
+Чтобы он работал, задай в `.env`:
+
+```bash
+MEZA_TERMINAL_SSH_ENABLED=true
+MEZA_TERMINAL_SSH_USER=root
+MEZA_TERMINAL_SSH_PORT=22
+MEZA_TERMINAL_SSH_KEY_PATH=/data/ssh/id_ed25519
+MEZA_TERMINAL_SSH_STRICT_HOST_KEY_CHECKING=accept-new
+MEZA_TERMINAL_SSH_KNOWN_HOSTS_PATH=/data/ssh/known_hosts
+```
+
+Если нужен режим выполнения команды внутри контейнера `meza-core` (не удалённая нода), выставь:
 
 ```bash
 MEZA_TERMINAL_LOCAL_EXEC_ENABLED=true

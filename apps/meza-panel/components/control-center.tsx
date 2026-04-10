@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Bot,
   CheckCircle2,
   Cpu,
   HardDrive,
+  Moon,
   Network,
   Play,
   RefreshCcw,
@@ -14,6 +15,7 @@ import {
   Server,
   ShieldCheck,
   Sparkles,
+  Sun,
   Terminal,
   Trash2,
 } from "lucide-react";
@@ -67,7 +69,8 @@ type TerminalHistoryItem = {
   jobId?: string;
 };
 
-type TerminalExecMode = "job_simulated" | "local_exec";
+type TerminalExecMode = "ssh_exec" | "job_simulated" | "local_exec";
+type ThemeMode = "light" | "dark";
 
 type AIConfigFormState = {
   provider: "stub" | "gemini";
@@ -175,7 +178,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
   ]);
   const [terminalNode, setTerminalNode] = useState(initialState.nodes[0]?.name ?? "argentina-17");
   const [terminalCommand, setTerminalCommand] = useState("sudo systemctl status docker");
-  const [terminalMode, setTerminalMode] = useState<TerminalExecMode>("job_simulated");
+  const [terminalMode, setTerminalMode] = useState<TerminalExecMode>("ssh_exec");
   const [terminalHistory, setTerminalHistory] = useState<TerminalHistoryItem[]>([]);
   const [isTerminalRunning, setIsTerminalRunning] = useState(false);
   const [terminalLiveOutput, setTerminalLiveOutput] = useState<string>("");
@@ -189,8 +192,31 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
     gemini_base_url: initialState.aiConfig.gemini_base_url || "https://generativelanguage.googleapis.com/v1beta",
   });
   const [clearGeminiKey, setClearGeminiKey] = useState(false);
+  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
 
   const cards = useMemo(() => summaryCards(state), [state]);
+
+  useEffect(() => {
+    const current = document.documentElement.getAttribute("data-theme");
+    if (current === "dark" || current === "light") {
+      setThemeMode(current);
+      return;
+    }
+
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const fallbackTheme: ThemeMode = prefersDark ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", fallbackTheme);
+    document.documentElement.style.colorScheme = fallbackTheme;
+    setThemeMode(fallbackTheme);
+  }, []);
+
+  function toggleThemeMode() {
+    const nextTheme: ThemeMode = themeMode === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", nextTheme);
+    document.documentElement.style.colorScheme = nextTheme;
+    window.localStorage.setItem("meza-theme", nextTheme);
+    setThemeMode(nextTheme);
+  }
 
   async function refreshState() {
     setIsRefreshing(true);
@@ -614,6 +640,10 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                   <RefreshCcw className={`size-4 ${isRefreshing ? "animate-spin" : ""}`} />
                   Обновить
                 </Button>
+                <Button variant="outline" onClick={toggleThemeMode}>
+                  {themeMode === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+                  {themeMode === "dark" ? "Светлая тема" : "Тёмная тема"}
+                </Button>
               </div>
             </div>
 
@@ -991,8 +1021,9 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                       value={terminalMode}
                       onChange={(event) => setTerminalMode(event.target.value as TerminalExecMode)}
                     >
-                      <option value="job_simulated">job_simulated (безопасный, через orchestration)</option>
-                      <option value="local_exec">local_exec (выполняет команду на meza-core хосте)</option>
+                      <option value="ssh_exec">ssh_exec (реальный SSH на выбранную ноду)</option>
+                      <option value="local_exec">local_exec (выполняет команду внутри контейнера meza-core)</option>
+                      <option value="job_simulated">job_simulated (демо-режим без реального выполнения)</option>
                     </select>
                   </div>
 
