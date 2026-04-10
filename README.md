@@ -176,6 +176,7 @@ Panel login protection can be configured via `.env`:
 MEZA_PANEL_BASIC_AUTH_ENABLED=true
 MEZA_PANEL_BASIC_AUTH_USER=admin
 MEZA_PANEL_BASIC_AUTH_PASSWORD=change-me
+MEZA_PANEL_BASIC_AUTH_SESSION_TOKEN=change-me-session-token
 ```
 
 ## Gemini Planner

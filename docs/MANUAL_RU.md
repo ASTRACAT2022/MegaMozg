@@ -151,6 +151,7 @@ curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/
 MEZA_PANEL_BASIC_AUTH_ENABLED=true
 MEZA_PANEL_BASIC_AUTH_USER=admin
 MEZA_PANEL_BASIC_AUTH_PASSWORD=<сгенерированный_пароль>
+MEZA_PANEL_BASIC_AUTH_SESSION_TOKEN=<сессионный_токен>
 ```
 
 Старый локальный скрипт тоже доступен:

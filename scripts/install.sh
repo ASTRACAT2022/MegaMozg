@@ -203,12 +203,13 @@ install_hub() {
     run_as_root cp "${HUB_DIR}/.env.example" "${HUB_DIR}/.env"
   fi
 
-  local operator bootstrap node panel_auth_user panel_auth_password
+  local operator bootstrap node panel_auth_user panel_auth_password panel_auth_session
   operator="$(generate_token)"
   bootstrap="$(generate_token)"
   node="$(generate_token)"
   panel_auth_user="${MEZA_PANEL_BASIC_AUTH_USER:-admin}"
   panel_auth_password="${MEZA_PANEL_BASIC_AUTH_PASSWORD:-$(generate_token | cut -c1-20)}"
+  panel_auth_session="$(generate_token)"
   local core_host_port
   core_host_port="$(pick_core_host_port)"
   local host_ip
@@ -228,6 +229,7 @@ install_hub() {
   set_env_value_root "${HUB_DIR}/.env" MEZA_PANEL_BASIC_AUTH_ENABLED "true"
   set_env_value_root "${HUB_DIR}/.env" MEZA_PANEL_BASIC_AUTH_USER "${panel_auth_user}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_PANEL_BASIC_AUTH_PASSWORD "${panel_auth_password}"
+  set_env_value_root "${HUB_DIR}/.env" MEZA_PANEL_BASIC_AUTH_SESSION_TOKEN "${panel_auth_session}"
 
   run_as_root mkdir -p "${HUB_DIR}/deploy/certs"
   run_as_root bash "${HUB_DIR}/scripts/generate-panel-cert.sh" "${host_ip}" "${HUB_DIR}/deploy/certs"

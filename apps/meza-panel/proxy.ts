@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 const REALM = 'Basic realm="MezaMozg Panel", charset="UTF-8"';
+const SESSION_COOKIE_NAME = "meza_panel_session";
 
 function unauthorized() {
   return new NextResponse("Authentication required", {
@@ -46,6 +47,13 @@ export function proxy(request: NextRequest) {
 
   const expectedUser = process.env.MEZA_PANEL_BASIC_AUTH_USER ?? "admin";
   const expectedPassword = process.env.MEZA_PANEL_BASIC_AUTH_PASSWORD ?? "admin";
+  const expectedSessionToken =
+    process.env.MEZA_PANEL_BASIC_AUTH_SESSION_TOKEN ?? `${expectedUser}:${expectedPassword}`;
+
+  const existingSession = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  if (existingSession && existingSession === expectedSessionToken) {
+    return NextResponse.next();
+  }
 
   const credentials = parseBasicAuth(request.headers.get("authorization"));
   if (!credentials) {
@@ -56,7 +64,17 @@ export function proxy(request: NextRequest) {
     return unauthorized();
   }
 
-  return NextResponse.next();
+  const response = NextResponse.next();
+  const xForwardedProto = request.headers.get("x-forwarded-proto");
+  const isSecureRequest = request.nextUrl.protocol === "https:" || xForwardedProto === "https";
+  response.cookies.set(SESSION_COOKIE_NAME, expectedSessionToken, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isSecureRequest,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30,
+  });
+  return response;
 }
 
 export const config = {
