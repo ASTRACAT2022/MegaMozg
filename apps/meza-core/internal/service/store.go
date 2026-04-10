@@ -47,6 +47,13 @@ type persistedState struct {
 func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 	if persistPath != "" {
 		if state, err := loadState(persistPath); err == nil {
+			state, changed := sanitizeSeededDemoState(state)
+			if changed {
+				if err := saveState(persistPath, state); err != nil {
+					return nil, err
+				}
+			}
+
 			return &MemoryStore{
 				nodes:       state.Nodes,
 				jobs:        state.Jobs,
@@ -58,87 +65,12 @@ func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 		}
 	}
 
-	now := time.Now().UTC()
-
 	store := &MemoryStore{
 		persistPath: persistPath,
-		nodes: []domain.Node{
-			{
-				ID:     "node-argentina-17",
-				Name:   "argentina-17",
-				Region: "south-america",
-				Tags:   []string{"docker", "prod", "argentina"},
-				Status: "online",
-				Metrics: domain.NodeMetrics{
-					CPUPercent:     37,
-					RAMPercent:     44,
-					DiskPercent:    52,
-					NetworkKbps:    940,
-					LoadAverage:    1,
-					ProcessesCount: 112,
-				},
-				LastSeenAt: now,
-				CreatedAt:  now,
-			},
-			{
-				ID:     "node-moscow-01",
-				Name:   "moscow-01",
-				Region: "ru-central",
-				Tags:   []string{"frontend", "staging", "moscow"},
-				Status: "online",
-				Metrics: domain.NodeMetrics{
-					CPUPercent:     61,
-					RAMPercent:     58,
-					DiskPercent:    48,
-					NetworkKbps:    670,
-					LoadAverage:    2,
-					ProcessesCount: 154,
-				},
-				LastSeenAt: now,
-				CreatedAt:  now,
-			},
-			{
-				ID:     "node-berlin-05",
-				Name:   "berlin-05",
-				Region: "eu-central",
-				Tags:   []string{"db", "prod", "legacy"},
-				Status: "degraded",
-				Metrics: domain.NodeMetrics{
-					CPUPercent:     88,
-					RAMPercent:     79,
-					DiskPercent:    84,
-					NetworkKbps:    420,
-					LoadAverage:    5,
-					ProcessesCount: 238,
-				},
-				LastSeenAt: now.Add(-2 * time.Minute),
-				CreatedAt:  now,
-			},
-		},
-		jobs: []domain.Job{
-			{
-				ID:             "job-boot-1",
-				Type:           "package_refresh",
-				TargetSelector: "tag:staging",
-				Strategy:       "rolling:10,25,50,100",
-				Status:         "approved",
-				Payload:        map[string]any{"manager": "apt"},
-				CreatedAt:      now,
-				CreatedBy:      "system",
-				Summary:        "Refresh package metadata on staging nodes.",
-				MatchedNodes:   []string{"moscow-01"},
-				Rollout: domain.RolloutProgress{
-					Mode:           "rolling",
-					TotalNodes:     1,
-					CompletedNodes: 0,
-					FailedNodes:    0,
-					Batches:        []domain.RolloutBatch{},
-				},
-			},
-		},
+		nodes:       []domain.Node{},
+		jobs:        []domain.Job{},
+		audits:      []domain.AuditEvent{},
 	}
-
-	store.appendAudit("system", "bootstrap", "fleet", "seed", "Initialized in-memory demo data", nil)
 	return store, nil
 }
 
@@ -438,23 +370,13 @@ func (s *MemoryStore) saveLocked() {
 		return
 	}
 
-	state := persistedState{
+	if err := saveState(s.persistPath, persistedState{
 		Nodes:  s.nodes,
 		Jobs:   s.jobs,
 		Audits: s.audits,
-	}
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
+	}); err != nil {
 		return
 	}
-
-	_ = os.MkdirAll(filepath.Dir(s.persistPath), 0o755)
-	tmpPath := s.persistPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmpPath, s.persistPath)
 }
 
 func loadState(path string) (persistedState, error) {
@@ -470,6 +392,85 @@ func loadState(path string) (persistedState, error) {
 	}
 
 	return state, nil
+}
+
+func saveState(path string, state persistedState) error {
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
+}
+
+func sanitizeSeededDemoState(state persistedState) (persistedState, bool) {
+	if !hasDemoBootstrapAudit(state.Audits) {
+		return state, false
+	}
+
+	filteredNodes := make([]domain.Node, 0, len(state.Nodes))
+	for _, node := range state.Nodes {
+		if node.ID == "node-argentina-17" || node.ID == "node-moscow-01" || node.ID == "node-berlin-05" {
+			continue
+		}
+		filteredNodes = append(filteredNodes, node)
+	}
+
+	filteredJobs := make([]domain.Job, 0, len(state.Jobs))
+	for _, job := range state.Jobs {
+		if job.ID == "job-boot-1" && job.CreatedBy == "system" {
+			continue
+		}
+		filteredJobs = append(filteredJobs, job)
+	}
+
+	filteredAudits := make([]domain.AuditEvent, 0, len(state.Audits))
+	for _, audit := range state.Audits {
+		if isDemoBootstrapAudit(audit) {
+			continue
+		}
+		filteredAudits = append(filteredAudits, audit)
+	}
+
+	changed := len(filteredNodes) != len(state.Nodes) ||
+		len(filteredJobs) != len(state.Jobs) ||
+		len(filteredAudits) != len(state.Audits)
+
+	if !changed {
+		return state, false
+	}
+
+	return persistedState{
+		Nodes:  filteredNodes,
+		Jobs:   filteredJobs,
+		Audits: filteredAudits,
+	}, true
+}
+
+func hasDemoBootstrapAudit(audits []domain.AuditEvent) bool {
+	for _, audit := range audits {
+		if isDemoBootstrapAudit(audit) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDemoBootstrapAudit(audit domain.AuditEvent) bool {
+	return audit.Action == "bootstrap" &&
+		audit.Actor == "system" &&
+		audit.ResourceType == "fleet" &&
+		audit.ResourceID == "seed" &&
+		audit.Message == "Initialized in-memory demo data"
 }
 
 func (s *MemoryStore) resolveTargetNamesLocked(selector string) []string {
