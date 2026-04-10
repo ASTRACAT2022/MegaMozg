@@ -33,6 +33,20 @@ func (p *StubPlanner) Interpret(prompt string) domain.AIPlannedOperation {
 	}
 
 	switch {
+	case strings.Contains(normalized, "bind9") && (strings.Contains(normalized, "обнов") || strings.Contains(normalized, "update") || strings.Contains(normalized, "upgrade")):
+		plan.Intent = "update_bind9"
+		plan.RequiresReview = true
+		plan.Summary = "Planned a bind9 package update rollout. Review and approval are required."
+		plan.JobPreview = domain.JobCreateInput{
+			Type:           "shell_command",
+			TargetSelector: extractTarget(normalized),
+			Strategy:       "rolling:10,25,50,100",
+			Payload: map[string]any{
+				"command": "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y bind9 bind9-utils bind9-dnsutils",
+			},
+			CreatedBy: "ai-copilot",
+			Summary:   "Update bind9 packages",
+		}
 	case strings.Contains(normalized, "docker") && (strings.Contains(normalized, "обнов") || strings.Contains(normalized, "update")):
 		plan.Intent = "update_docker"
 		plan.RequiresReview = true
@@ -79,6 +93,8 @@ func (p *StubPlanner) Interpret(prompt string) domain.AIPlannedOperation {
 
 func extractTarget(prompt string) string {
 	switch {
+	case strings.Contains(prompt, "всех сервер"), strings.Contains(prompt, "all server"), strings.Contains(prompt, "all nodes"), strings.Contains(prompt, "fleet"):
+		return "fleet:all"
 	case strings.Contains(prompt, "argentina-17"):
 		return "node:argentina-17"
 	case strings.Contains(prompt, "moscow"):

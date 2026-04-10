@@ -147,6 +147,13 @@ func (p *RuntimePlanner) Chat(prompt string) domain.AIChatResponse {
 				Message:  strings.TrimSpace(text),
 			}
 		}
+
+		if err != nil {
+			return domain.AIChatResponse{
+				Provider: "gemini-error",
+				Message:  fmt.Sprintf("Gemini временно недоступен: %v. Проверь API key, интернет на хабе и Gemini base URL.", err),
+			}
+		}
 	}
 
 	return domain.AIChatResponse{

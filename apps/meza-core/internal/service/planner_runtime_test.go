@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mezamozg/meza-core/internal/domain"
 )
@@ -69,5 +70,24 @@ func TestRuntimePlannerChatFallbackReturnsMessage(t *testing.T) {
 	}
 	if reply.Message == "" {
 		t.Fatalf("expected non-empty message in chat reply")
+	}
+}
+
+func TestRuntimePlannerChatReturnsGeminiErrorWhenProviderConfiguredButUnavailable(t *testing.T) {
+	planner := NewRuntimePlanner(RuntimePlannerConfig{
+		Provider:      "gemini",
+		GeminiAPIKey:  "test-key",
+		GeminiModel:   "gemini-2.5-flash",
+		GeminiBaseURL: "http://127.0.0.1:1",
+		Timeout:       500 * time.Millisecond,
+		Fallback:      NewStubPlanner(),
+	})
+
+	reply := planner.Chat("кто ты")
+	if reply.Provider != "gemini-error" {
+		t.Fatalf("expected gemini-error provider, got %q", reply.Provider)
+	}
+	if reply.Message == "" {
+		t.Fatalf("expected non-empty error message")
 	}
 }

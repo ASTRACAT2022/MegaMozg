@@ -109,7 +109,7 @@ func (p *GeminiPlanner) plan(prompt string) (domain.AIPlannedOperation, error) {
 	requestBody := geminiRequest{
 		SystemInstruction: geminiContent{
 			Parts: []geminiPart{{
-				Text: "You are the MezaMozg AI planner. Produce only a safe typed job plan. Never emit shell commands. Prefer rolling strategy for privileged operations. Set requires_review=true for any privileged or potentially disruptive change.",
+				Text: "You are the MezaMozg AI planner. Produce only a safe typed job plan. Prefer rolling strategy for privileged operations. Set requires_review=true for any privileged or potentially disruptive change. For package operations (e.g. bind9 updates) you may use shell_command with an explicit payload.command.",
 			}},
 		},
 		Contents: []geminiContent{{
@@ -225,7 +225,7 @@ func plannerFunctionDeclaration() geminiFunctionDeclaration {
 					Properties: map[string]geminiSchema{
 						"type": {
 							Type: "STRING",
-							Enum: []string{"update_docker", "package_refresh", "service_restart", "manual_review"},
+							Enum: []string{"update_docker", "package_refresh", "service_restart", "manual_review", "shell_command", "bash_script"},
 						},
 						"target_selector": {
 							Type: "STRING",

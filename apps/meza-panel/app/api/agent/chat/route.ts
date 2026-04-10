@@ -95,7 +95,8 @@ export async function POST(request: Request) {
 
     const aiConfig = await coreJson<AIConfigResponse>("/api/v1/ai/config");
     if (isConversationalPrompt(body.message)) {
-      try {
+      const shouldUseCoreChat = aiConfig.provider === "gemini" || aiConfig.has_gemini_api_key;
+      if (shouldUseCoreChat) {
         const chatReply = await coreJson<CoreAIChatResponse>("/api/v1/ai/chat", {
           method: "POST",
           body: JSON.stringify({ prompt: body.message }),
@@ -107,8 +108,6 @@ export async function POST(request: Request) {
           executed: false,
           assistant_message: chatReply.message,
         });
-      } catch {
-        // fallback to local canned reply if core chat endpoint fails
       }
 
       return NextResponse.json({
