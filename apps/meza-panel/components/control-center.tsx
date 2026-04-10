@@ -166,7 +166,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
   const [jobForm, setJobForm] = useState<JobFormState>(initialJobForm);
 
   const [chatInput, setChatInput] = useState("");
-  const [autoExecute, setAutoExecute] = useState(false);
+  const [autoExecute, setAutoExecute] = useState(true);
   const [chatSession] = useState("default");
   const [isChatSending, setIsChatSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -960,6 +960,53 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                           ))}
                         </div>
 
+                        <details className="mt-3 rounded-lg border bg-muted/20 p-3">
+                          <summary className="cursor-pointer text-sm font-medium">Что делает задача и прогресс</summary>
+                          <div className="mt-3 space-y-3">
+                            <div className="space-y-1">
+                              <p className="text-muted-foreground text-xs">Payload (реально отправлено в ядро)</p>
+                              <pre className="max-h-40 overflow-auto rounded bg-background p-2 text-xs whitespace-pre-wrap">
+                                {JSON.stringify(job.payload ?? {}, null, 2)}
+                              </pre>
+                            </div>
+
+                            <div className="space-y-1">
+                              <p className="text-muted-foreground text-xs">Rollout</p>
+                              <div className="text-sm">
+                                {job.rollout
+                                  ? `${job.rollout.completed_nodes}/${job.rollout.total_nodes} выполнено, ошибок: ${job.rollout.failed_nodes}, этап: ${job.rollout.current_batch_label || "n/a"}`
+                                  : "Данные rollout пока отсутствуют"}
+                              </div>
+                              {job.rollout ? (
+                                <Progress
+                                  value={
+                                    job.rollout.total_nodes > 0
+                                      ? Math.min(100, Math.round((job.rollout.completed_nodes / job.rollout.total_nodes) * 100))
+                                      : 0
+                                  }
+                                />
+                              ) : null}
+                            </div>
+
+                            {job.rollout?.batches?.length ? (
+                              <div className="space-y-2">
+                                <p className="text-muted-foreground text-xs">Этапы выполнения</p>
+                                {job.rollout.batches.map((batch) => (
+                                  <div key={`${job.id}-${batch.label}-${batch.updated_at}`} className="rounded border bg-background p-2 text-xs">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-medium">{batch.label}</span>
+                                      <StatusBadge status={batch.status} />
+                                    </div>
+                                    <p className="text-muted-foreground mt-1">
+                                      Успех: {batch.completed_nodes}, Ошибки: {batch.failed_nodes}, Нод: {batch.targeted_nodes.length}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </details>
+
                         <div className="mt-4 flex flex-wrap gap-2">
                           <Button variant="outline" onClick={() => approveJob(job.id)} disabled={!canApprove || isMutating}>
                             Подтвердить
@@ -1142,7 +1189,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                           checked={autoExecute}
                           onChange={(event) => setAutoExecute(event.target.checked)}
                         />
-                        Автозапуск (если не требуется подтверждение)
+                        Автовыполнение (с авто-подтверждением)
                       </label>
                       <Button onClick={sendAgentMessage} disabled={isChatSending}>
                         <Send className="size-4" />

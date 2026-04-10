@@ -86,11 +86,11 @@ func TestGeminiPlannerFallsBackOnFailure(t *testing.T) {
 
 	plan := planner.Interpret("обнови docker на ноде argentina-17")
 
-	if plan.Provider != "stub-fallback" {
-		t.Fatalf("expected stub-fallback provider, got %q", plan.Provider)
+	if plan.Provider != "gemini-error" {
+		t.Fatalf("expected gemini-error provider, got %q", plan.Provider)
 	}
-	if plan.Intent != "update_docker" {
-		t.Fatalf("expected fallback to preserve semantic plan, got %q", plan.Intent)
+	if plan.Intent != "planner_error" {
+		t.Fatalf("expected planner_error intent, got %q", plan.Intent)
 	}
 }
 

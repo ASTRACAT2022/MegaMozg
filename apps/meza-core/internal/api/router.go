@@ -3,9 +3,13 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mezamozg/meza-core/internal/domain"
 	"github.com/mezamozg/meza-core/internal/service"
@@ -285,6 +289,11 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if reply, ok := s.tryBuildInfrastructureAnalyticsReply(input.Prompt); ok {
+		writeJSON(w, http.StatusOK, reply)
+		return
+	}
+
 	if chatPlanner, ok := s.planner.(service.AIChatCapablePlanner); ok {
 		reply := chatPlanner.Chat(input.Prompt)
 		writeJSON(w, http.StatusOK, reply)
@@ -295,6 +304,106 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		Provider: "stub-chat",
 		Message:  "AI chat временно недоступен. Используй команду вида: «обнови docker на ноде astra-1».",
 	})
+}
+
+func (s *Server) tryBuildInfrastructureAnalyticsReply(prompt string) (domain.AIChatResponse, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(prompt))
+	if normalized == "" {
+		return domain.AIChatResponse{}, false
+	}
+
+	if !looksLikeFreeServerQuestion(normalized) {
+		return domain.AIChatResponse{}, false
+	}
+
+	windowHours := parseWindowHours(normalized)
+	topLimit := parseTopLimit(normalized)
+
+	top := s.store.TopFreeNodes(time.Duration(windowHours)*time.Hour, topLimit)
+	if len(top) == 0 {
+		return domain.AIChatResponse{
+			Provider: "infra-analytics",
+			Message:  "Пока недостаточно истории метрик для аналитики. Ноды должны отправлять heartbeat некоторое время (минимум несколько минут).",
+		}, true
+	}
+
+	lines := []string{
+		fmt.Sprintf("Топ %d самых свободных серверов за последние %d ч:", len(top), windowHours),
+	}
+	for idx, node := range top {
+		label := node.NodeName
+		if strings.TrimSpace(node.DisplayName) != "" {
+			label = fmt.Sprintf("%s (%s)", node.DisplayName, node.NodeName)
+		}
+		lines = append(lines,
+			fmt.Sprintf("%d. %s — free_score %.1f, CPU %.1f%%, RAM %.1f%%, Disk %.1f%%, samples %d",
+				idx+1,
+				label,
+				node.FreeScore,
+				node.AverageCPU,
+				node.AverageRAM,
+				node.AverageDisk,
+				node.Samples,
+			),
+		)
+	}
+
+	lines = append(lines, "Если хочешь, сразу подготовлю и запущу задачу на этих серверах.")
+	return domain.AIChatResponse{
+		Provider: "infra-analytics",
+		Message:  strings.Join(lines, "\n"),
+	}, true
+}
+
+func looksLikeFreeServerQuestion(normalized string) bool {
+	keywords := []string{
+		"самый свобод",
+		"свободн сервер",
+		"свободные сервер",
+		"наименее загруж",
+		"least loaded",
+		"free server",
+		"топ сервер",
+	}
+
+	for _, kw := range keywords {
+		if strings.Contains(normalized, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseWindowHours(normalized string) int {
+	re := regexp.MustCompile(`(\d+)\s*(ч|час|hours|hour|h)`)
+	matches := re.FindStringSubmatch(normalized)
+	if len(matches) >= 2 {
+		if parsed, err := strconv.Atoi(matches[1]); err == nil && parsed > 0 {
+			if parsed > 168 {
+				return 168
+			}
+			return parsed
+		}
+	}
+
+	if strings.Contains(normalized, "48") {
+		return 48
+	}
+	return 48
+}
+
+func parseTopLimit(normalized string) int {
+	re := regexp.MustCompile(`топ\s*(\d+)`)
+	matches := re.FindStringSubmatch(normalized)
+	if len(matches) >= 2 {
+		if parsed, err := strconv.Atoi(matches[1]); err == nil && parsed > 0 {
+			if parsed > 20 {
+				return 20
+			}
+			return parsed
+		}
+	}
+	return 5
 }
 
 func (s *Server) handleAIPlanAndCreate(w http.ResponseWriter, r *http.Request) {
@@ -313,6 +422,13 @@ func (s *Server) handleAIPlanAndCreate(w http.ResponseWriter, r *http.Request) {
 	if plan.Provider == "gemini-missing-key" {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": "Gemini API key is missing. Configure it in /api/v1/ai/config first.",
+			"plan":  plan,
+		})
+		return
+	}
+	if plan.Provider == "gemini-error" {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error": "Gemini planning failed. Check API key, network egress, and Gemini base URL.",
 			"plan":  plan,
 		})
 		return

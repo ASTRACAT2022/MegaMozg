@@ -30,6 +30,32 @@ type NodeMetrics struct {
 	ProcessesCount int `json:"processes_count"`
 }
 
+type NodeMetricSample struct {
+	NodeName   string      `json:"node_name"`
+	Timestamp  time.Time   `json:"timestamp"`
+	Status     string      `json:"status"`
+	Region     string      `json:"region"`
+	Tags       []string    `json:"tags"`
+	Metrics    NodeMetrics `json:"metrics"`
+	LastSeenAt time.Time   `json:"last_seen_at"`
+}
+
+type NodeFreeScore struct {
+	NodeName       string    `json:"node_name"`
+	DisplayName    string    `json:"display_name"`
+	Region         string    `json:"region"`
+	Status         string    `json:"status"`
+	Samples        int       `json:"samples"`
+	WindowHours    int       `json:"window_hours"`
+	AverageCPU     float64   `json:"average_cpu"`
+	AverageRAM     float64   `json:"average_ram"`
+	AverageDisk    float64   `json:"average_disk"`
+	AverageLoad    float64   `json:"average_load"`
+	AverageNetKbps float64   `json:"average_net_kbps"`
+	FreeScore      float64   `json:"free_score"`
+	LastSeenAt     time.Time `json:"last_seen_at"`
+}
+
 type Job struct {
 	ID               string              `json:"id"`
 	Type             string              `json:"type"`

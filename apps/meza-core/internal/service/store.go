@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,13 +24,20 @@ var (
 	ErrNodeNotFound     = errors.New("node not found")
 )
 
+const (
+	metricHistoryRetention  = 72 * time.Hour
+	metricSampleMinInterval = 5 * time.Minute
+)
+
 type MemoryStore struct {
-	mu          sync.RWMutex
-	nodes       []domain.Node
-	jobs        []domain.Job
-	audits      []domain.AuditEvent
-	aiSettings  domain.AISettings
-	persistPath string
+	mu                 sync.RWMutex
+	nodes              []domain.Node
+	metricSamples      []domain.NodeMetricSample
+	lastMetricSampleAt map[string]time.Time
+	jobs               []domain.Job
+	audits             []domain.AuditEvent
+	aiSettings         domain.AISettings
+	persistPath        string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -41,10 +49,11 @@ func NewMemoryStore() *MemoryStore {
 }
 
 type persistedState struct {
-	Nodes      []domain.Node       `json:"nodes"`
-	Jobs       []domain.Job        `json:"jobs"`
-	Audits     []domain.AuditEvent `json:"audits"`
-	AISettings domain.AISettings   `json:"ai_settings"`
+	Nodes         []domain.Node             `json:"nodes"`
+	MetricSamples []domain.NodeMetricSample `json:"metric_samples"`
+	Jobs          []domain.Job              `json:"jobs"`
+	Audits        []domain.AuditEvent       `json:"audits"`
+	AISettings    domain.AISettings         `json:"ai_settings"`
 }
 
 func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
@@ -56,6 +65,11 @@ func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 				state.Nodes = dedupedNodes
 				changed = true
 			}
+			filteredSamples, removedSamples := pruneMetricSamples(state.MetricSamples, time.Now().UTC(), metricHistoryRetention)
+			if removedSamples > 0 {
+				state.MetricSamples = filteredSamples
+				changed = true
+			}
 			if changed {
 				if err := saveState(persistPath, state); err != nil {
 					return nil, err
@@ -63,11 +77,13 @@ func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 			}
 
 			return &MemoryStore{
-				nodes:       state.Nodes,
-				jobs:        state.Jobs,
-				audits:      state.Audits,
-				aiSettings:  normalizeAISettings(state.AISettings),
-				persistPath: persistPath,
+				nodes:              state.Nodes,
+				metricSamples:      state.MetricSamples,
+				lastMetricSampleAt: buildLastMetricSampleIndex(state.MetricSamples),
+				jobs:               state.Jobs,
+				audits:             state.Audits,
+				aiSettings:         normalizeAISettings(state.AISettings),
+				persistPath:        persistPath,
 			}, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
@@ -75,11 +91,13 @@ func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 	}
 
 	store := &MemoryStore{
-		persistPath: persistPath,
-		nodes:       []domain.Node{},
-		jobs:        []domain.Job{},
-		audits:      []domain.AuditEvent{},
-		aiSettings:  normalizeAISettings(domain.AISettings{}),
+		persistPath:        persistPath,
+		nodes:              []domain.Node{},
+		metricSamples:      []domain.NodeMetricSample{},
+		lastMetricSampleAt: map[string]time.Time{},
+		jobs:               []domain.Job{},
+		audits:             []domain.AuditEvent{},
+		aiSettings:         normalizeAISettings(domain.AISettings{}),
 	}
 	return store, nil
 }
@@ -90,6 +108,116 @@ func (s *MemoryStore) ListNodes() []domain.Node {
 
 	out := make([]domain.Node, len(s.nodes))
 	copy(out, s.nodes)
+	return out
+}
+
+func (s *MemoryStore) TopFreeNodes(window time.Duration, limit int) []domain.NodeFreeScore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 5
+	}
+	if window <= 0 {
+		window = 48 * time.Hour
+	}
+
+	cutoff := time.Now().UTC().Add(-window)
+
+	type agg struct {
+		count      int
+		cpuSum     int
+		ramSum     int
+		diskSum    int
+		loadSum    int
+		networkSum int
+		lastSeenAt time.Time
+		status     string
+		region     string
+	}
+
+	byNode := map[string]*agg{}
+	nodeByName := map[string]domain.Node{}
+	for _, node := range s.nodes {
+		nodeByName[node.Name] = node
+	}
+
+	for _, sample := range s.metricSamples {
+		if sample.Timestamp.Before(cutoff) {
+			continue
+		}
+
+		entry := byNode[sample.NodeName]
+		if entry == nil {
+			entry = &agg{}
+			byNode[sample.NodeName] = entry
+		}
+
+		entry.count++
+		entry.cpuSum += sample.Metrics.CPUPercent
+		entry.ramSum += sample.Metrics.RAMPercent
+		entry.diskSum += sample.Metrics.DiskPercent
+		entry.loadSum += sample.Metrics.LoadAverage
+		entry.networkSum += sample.Metrics.NetworkKbps
+		if sample.LastSeenAt.After(entry.lastSeenAt) {
+			entry.lastSeenAt = sample.LastSeenAt
+		}
+		entry.status = sample.Status
+		entry.region = sample.Region
+	}
+
+	out := make([]domain.NodeFreeScore, 0, len(byNode))
+	for nodeName, aggregate := range byNode {
+		if aggregate.count == 0 {
+			continue
+		}
+
+		nodeMeta := nodeByName[nodeName]
+		avgCPU := float64(aggregate.cpuSum) / float64(aggregate.count)
+		avgRAM := float64(aggregate.ramSum) / float64(aggregate.count)
+		avgDisk := float64(aggregate.diskSum) / float64(aggregate.count)
+		avgLoad := float64(aggregate.loadSum) / float64(aggregate.count)
+		avgNetwork := float64(aggregate.networkSum) / float64(aggregate.count)
+		loadPenalty := avgLoad * 10
+		if loadPenalty > 100 {
+			loadPenalty = 100
+		}
+		weightedLoad := (avgCPU * 0.45) + (avgRAM * 0.35) + (avgDisk * 0.15) + (loadPenalty * 0.05)
+		freeScore := 100 - weightedLoad
+		if freeScore < 0 {
+			freeScore = 0
+		}
+
+		out = append(out, domain.NodeFreeScore{
+			NodeName:       nodeName,
+			DisplayName:    nodeMeta.DisplayName,
+			Region:         coalesce(nodeMeta.Region, aggregate.region),
+			Status:         coalesce(nodeMeta.Status, aggregate.status),
+			Samples:        aggregate.count,
+			WindowHours:    int(window.Hours()),
+			AverageCPU:     round1(avgCPU),
+			AverageRAM:     round1(avgRAM),
+			AverageDisk:    round1(avgDisk),
+			AverageLoad:    round1(avgLoad),
+			AverageNetKbps: round1(avgNetwork),
+			FreeScore:      round1(freeScore),
+			LastSeenAt:     aggregate.lastSeenAt,
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FreeScore == out[j].FreeScore {
+			if out[i].AverageCPU == out[j].AverageCPU {
+				return out[i].NodeName < out[j].NodeName
+			}
+			return out[i].AverageCPU < out[j].AverageCPU
+		}
+		return out[i].FreeScore > out[j].FreeScore
+	})
+
+	if len(out) > limit {
+		out = out[:limit]
+	}
 	return out
 }
 
@@ -120,6 +248,7 @@ func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
 			"ipAddress":  s.nodes[idx].IPAddress,
 			"duplicates": removed,
 		})
+		s.appendMetricSampleLocked(s.nodes[idx], now)
 		s.saveLocked()
 		return s.nodes[idx]
 	}
@@ -144,6 +273,7 @@ func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
 				"ipAddress":  s.nodes[idx].IPAddress,
 				"duplicates": removed,
 			})
+			s.appendMetricSampleLocked(s.nodes[idx], now)
 			s.saveLocked()
 			return s.nodes[idx]
 		}
@@ -176,6 +306,7 @@ func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
 		"ipAddress":  node.IPAddress,
 		"duplicates": removed,
 	})
+	s.appendMetricSampleLocked(node, now)
 	s.saveLocked()
 	return node
 }
@@ -203,6 +334,7 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 				"ipAddress": s.nodes[idx].IPAddress,
 			})
 			s.deduplicateNodesByIPLocked("meza-node")
+			s.appendMetricSampleLocked(s.nodes[idx], now)
 			s.saveLocked()
 			return s.nodes[idx]
 		}
@@ -228,6 +360,7 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 				"ipAddress": s.nodes[idx].IPAddress,
 			})
 			s.deduplicateNodesByIPLocked("meza-node")
+			s.appendMetricSampleLocked(s.nodes[idx], now)
 			s.saveLocked()
 			return s.nodes[idx]
 		}
@@ -250,6 +383,7 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 		"ipAddress": node.IPAddress,
 	})
 	s.deduplicateNodesByIPLocked("meza-node")
+	s.appendMetricSampleLocked(node, now)
 	s.saveLocked()
 	return node
 }
@@ -552,10 +686,11 @@ func (s *MemoryStore) saveLocked() {
 	}
 
 	if err := saveState(s.persistPath, persistedState{
-		Nodes:      s.nodes,
-		Jobs:       s.jobs,
-		Audits:     s.audits,
-		AISettings: s.aiSettings,
+		Nodes:         s.nodes,
+		MetricSamples: s.metricSamples,
+		Jobs:          s.jobs,
+		Audits:        s.audits,
+		AISettings:    s.aiSettings,
 	}); err != nil {
 		return
 	}
@@ -632,10 +767,11 @@ func sanitizeSeededDemoState(state persistedState) (persistedState, bool) {
 	}
 
 	return persistedState{
-		Nodes:      filteredNodes,
-		Jobs:       filteredJobs,
-		Audits:     filteredAudits,
-		AISettings: state.AISettings,
+		Nodes:         filteredNodes,
+		MetricSamples: state.MetricSamples,
+		Jobs:          filteredJobs,
+		Audits:        filteredAudits,
+		AISettings:    state.AISettings,
 	}, true
 }
 
@@ -958,6 +1094,61 @@ func cumulativeBatch(nodes []domain.Node, percent int, seen map[string]bool) []d
 		batch = append(batch, node)
 	}
 	return batch
+}
+
+func (s *MemoryStore) appendMetricSampleLocked(node domain.Node, now time.Time) {
+	if s.lastMetricSampleAt == nil {
+		s.lastMetricSampleAt = map[string]time.Time{}
+	}
+
+	last := s.lastMetricSampleAt[node.Name]
+	if !last.IsZero() && now.Sub(last) < metricSampleMinInterval {
+		return
+	}
+
+	s.metricSamples = append(s.metricSamples, domain.NodeMetricSample{
+		NodeName:   node.Name,
+		Timestamp:  now,
+		Status:     node.Status,
+		Region:     node.Region,
+		Tags:       node.Tags,
+		Metrics:    node.Metrics,
+		LastSeenAt: node.LastSeenAt,
+	})
+	s.lastMetricSampleAt[node.Name] = now
+
+	pruned, removed := pruneMetricSamples(s.metricSamples, now, metricHistoryRetention)
+	if removed > 0 {
+		s.metricSamples = pruned
+	}
+}
+
+func pruneMetricSamples(samples []domain.NodeMetricSample, now time.Time, retention time.Duration) ([]domain.NodeMetricSample, int) {
+	if len(samples) == 0 || retention <= 0 {
+		return samples, 0
+	}
+
+	cutoff := now.Add(-retention)
+	out := make([]domain.NodeMetricSample, 0, len(samples))
+	removed := 0
+	for _, sample := range samples {
+		if sample.Timestamp.Before(cutoff) {
+			removed++
+			continue
+		}
+		out = append(out, sample)
+	}
+	return out, removed
+}
+
+func buildLastMetricSampleIndex(samples []domain.NodeMetricSample) map[string]time.Time {
+	index := map[string]time.Time{}
+	for _, sample := range samples {
+		if sample.Timestamp.After(index[sample.NodeName]) {
+			index[sample.NodeName] = sample.Timestamp
+		}
+	}
+	return index
 }
 
 func round1(value float64) float64 {

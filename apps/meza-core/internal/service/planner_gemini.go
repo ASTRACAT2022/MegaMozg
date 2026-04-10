@@ -61,10 +61,25 @@ func (p *GeminiPlanner) Interpret(prompt string) domain.AIPlannedOperation {
 
 	plan, err := p.plan(prompt)
 	if err != nil {
-		fallback := p.fallback.Interpret(prompt)
-		fallback.Provider = "stub-fallback"
-		fallback.Summary = fmt.Sprintf("%s Fallback planner used because Gemini was unavailable.", fallback.Summary)
-		return fallback
+		return domain.AIPlannedOperation{
+			Prompt:         prompt,
+			Provider:       "gemini-error",
+			Intent:         "planner_error",
+			RequiresReview: true,
+			Summary:        fmt.Sprintf("Gemini planner error: %v", err),
+			JobPreview: domain.JobCreateInput{
+				Type:           "manual_review",
+				TargetSelector: "fleet:all",
+				Strategy:       "all-at-once",
+				Payload: map[string]any{
+					"reason": "gemini_planner_error",
+					"error":  err.Error(),
+					"prompt": prompt,
+				},
+				CreatedBy: "ai-copilot",
+				Summary:   "Gemini planning failed, manual review required",
+			},
+		}
 	}
 
 	return plan
@@ -109,7 +124,7 @@ func (p *GeminiPlanner) plan(prompt string) (domain.AIPlannedOperation, error) {
 	requestBody := geminiRequest{
 		SystemInstruction: geminiContent{
 			Parts: []geminiPart{{
-				Text: "You are the MezaMozg AI planner. Produce only a safe typed job plan. Prefer rolling strategy for privileged operations. Set requires_review=true for any privileged or potentially disruptive change. For package operations (e.g. bind9 updates) you may use shell_command with an explicit payload.command.",
+				Text: "You are the MezaMozg AI planner. Produce only a safe typed job plan for real execution. Prefer rolling strategy for privileged operations. Set requires_review=true for privileged or disruptive changes unless the operator explicitly asks for immediate run. You may use job types shell_command and bash_script. If type=shell_command then include payload.command. If type=bash_script then include payload.script. Always choose the narrowest target selector possible (node:, tag:, or fleet:all).",
 			}},
 		},
 		Contents: []geminiContent{{

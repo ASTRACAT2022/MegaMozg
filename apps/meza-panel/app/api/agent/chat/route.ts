@@ -95,8 +95,7 @@ export async function POST(request: Request) {
 
     const aiConfig = await coreJson<AIConfigResponse>("/api/v1/ai/config");
     if (isConversationalPrompt(body.message)) {
-      const shouldUseCoreChat = aiConfig.provider === "gemini" || aiConfig.has_gemini_api_key;
-      if (shouldUseCoreChat) {
+      try {
         const chatReply = await coreJson<CoreAIChatResponse>("/api/v1/ai/chat", {
           method: "POST",
           body: JSON.stringify({ prompt: body.message }),
@@ -108,15 +107,15 @@ export async function POST(request: Request) {
           executed: false,
           assistant_message: chatReply.message,
         });
+      } catch {
+        return NextResponse.json({
+          session_id: body.session_id ?? "default",
+          plan: null,
+          job: null,
+          executed: false,
+          assistant_message: buildChatOnlyReply(aiConfig).assistant_message,
+        });
       }
-
-      return NextResponse.json({
-        session_id: body.session_id ?? "default",
-        plan: null,
-        job: null,
-        executed: false,
-        assistant_message: buildChatOnlyReply(aiConfig).assistant_message,
-      });
     }
 
     const planResult = await coreJson<PlanAndCreateResponse>("/api/v1/ai/plan-and-create", {
@@ -130,15 +129,17 @@ export async function POST(request: Request) {
 
     if (body.auto_execute) {
       if (job.requires_approval) {
-        note = "Задача создана, но требует подтверждения перед запуском.";
-      } else {
-        job = await coreJson<JobItem>(`/api/v1/jobs/${job.id}/start`, {
+        job = await coreJson<JobItem>(`/api/v1/jobs/${job.id}/approve`, {
           method: "POST",
           body: JSON.stringify({ actor: "ai-copilot" }),
         });
-        executed = true;
-        note = "Задача была автоматически запущена.";
       }
+      job = await coreJson<JobItem>(`/api/v1/jobs/${job.id}/start`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "ai-copilot" }),
+      });
+      executed = true;
+      note = "Задача была автоматически подтверждена и запущена.";
     }
 
     const assistantMessage =

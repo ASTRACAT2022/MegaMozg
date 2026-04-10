@@ -35,10 +35,32 @@ export type JobItem = {
   target_selector: string;
   strategy: string;
   status: string;
+  payload?: Record<string, unknown>;
   created_by: string;
+  created_at?: string;
   requires_approval: boolean;
+  approved_by?: string;
+  approved_at?: string;
+  started_at?: string;
+  completed_at?: string;
   summary: string;
   matched_nodes: string[];
+  rollout?: {
+    mode: string;
+    current_batch_index: number;
+    current_batch_label: string;
+    completed_nodes: number;
+    failed_nodes: number;
+    total_nodes: number;
+    batches: Array<{
+      label: string;
+      targeted_nodes: string[];
+      status: string;
+      completed_nodes: number;
+      failed_nodes: number;
+      updated_at: string;
+    }>;
+  };
 };
 
 export type AuditItem = {
@@ -99,6 +121,12 @@ function normalizeJob(job: JobItem): JobItem {
   return {
     ...job,
     matched_nodes: ensureArray(job.matched_nodes),
+    rollout: job.rollout
+      ? {
+          ...job.rollout,
+          batches: ensureArray(job.rollout.batches),
+        }
+      : undefined,
   };
 }
 
