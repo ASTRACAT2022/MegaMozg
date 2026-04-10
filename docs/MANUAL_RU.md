@@ -144,6 +144,15 @@ curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/
 
 Если порт `8080` на хосте занят, инсталлер хаба автоматически выберет другой порт для `meza-core` (например `18080`), а панель останется на `1499`.
 
+После установки хаба панель защищена базовой авторизацией (login/password).  
+Скрипт выводит логин и пароль в конце установки, а также пишет их в `.env`:
+
+```bash
+MEZA_PANEL_BASIC_AUTH_ENABLED=true
+MEZA_PANEL_BASIC_AUTH_USER=admin
+MEZA_PANEL_BASIC_AUTH_PASSWORD=<сгенерированный_пароль>
+```
+
 Старый локальный скрипт тоже доступен:
 
 One-line установка:
