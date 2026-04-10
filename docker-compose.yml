@@ -6,7 +6,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8080:8080"
+      - "${MEZA_CORE_HOST_PORT:-8080}:8080"
     volumes:
       - meza_core_data:/data
     restart: unless-stopped

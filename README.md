@@ -79,6 +79,7 @@ Copy `.env.example` to `.env` and set real tokens before deploying anywhere beyo
 Important variables:
 
 - `MEZA_CORE_ADDR`
+- `MEZA_CORE_HOST_PORT`
 - `MEZA_CORE_DATA_PATH`
 - `MEZA_OPERATOR_TOKEN`
 - `MEZA_BOOTSTRAP_TOKEN`
@@ -153,6 +154,7 @@ curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/
 What it does:
 - `-install hub`: installs Docker stack (`meza-core` + `meza-panel` + SSL proxy), generates tokens, starts services.
 - `-install node`: auto-registers node and starts heartbeat service with no extra clicks.
+- If host `8080` is busy, installer auto-picks another host port for core (for example `18080`), while panel remains on `1499`.
 
 ## Container Deployment
 

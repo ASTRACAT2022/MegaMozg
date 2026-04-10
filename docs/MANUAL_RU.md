@@ -136,6 +136,8 @@ curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/install.sh | bash -s -- -install node <HUB_IP> <BOOTSTRAP_TOKEN>
 ```
 
+Если порт `8080` на хосте занят, инсталлер хаба автоматически выберет другой порт для `meza-core` (например `18080`), а панель останется на `1499`.
+
 Старый локальный скрипт тоже доступен:
 
 One-line установка:

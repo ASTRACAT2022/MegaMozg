@@ -32,6 +32,38 @@ has_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+port_in_use() {
+  local port="$1"
+  if has_cmd ss && ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}$"; then
+    return 0
+  fi
+  if has_cmd lsof && lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+pick_core_host_port() {
+  if [[ -n "${MEZA_CORE_HOST_PORT:-}" ]]; then
+    echo "${MEZA_CORE_HOST_PORT}"
+    return
+  fi
+
+  if ! port_in_use 8080; then
+    echo "8080"
+    return
+  fi
+
+  for candidate in 18080 28080 38080; do
+    if ! port_in_use "${candidate}"; then
+      echo "${candidate}"
+      return
+    fi
+  done
+
+  echo "8080"
+}
+
 pkg_manager() {
   if has_cmd apt-get; then
     echo "apt"
@@ -174,11 +206,14 @@ install_hub() {
   operator="$(generate_token)"
   bootstrap="$(generate_token)"
   node="$(generate_token)"
+  local core_host_port
+  core_host_port="$(pick_core_host_port)"
 
   set_env_value_root "${HUB_DIR}/.env" MEZA_OPERATOR_TOKEN "${operator}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_PANEL_OPERATOR_TOKEN "${operator}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_BOOTSTRAP_TOKEN "${bootstrap}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_NODE_TOKEN "${node}"
+  set_env_value_root "${HUB_DIR}/.env" MEZA_CORE_HOST_PORT "${core_host_port}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_CORE_BASE_URL "http://meza-core:8080"
   set_env_value_root "${HUB_DIR}/.env" MEZA_ALLOW_ANONYMOUS_UI "false"
 
@@ -195,11 +230,11 @@ install_hub() {
 [meza] hub installation completed
 Hub directory: ${HUB_DIR}
 Panel URL: https://${host_ip}:1499
-Core URL:  http://${host_ip}:8080
+Core URL:  http://${host_ip}:${core_host_port}
 Bootstrap token (save it): ${bootstrap}
 
 Node install command:
-curl -fsSL ${REPO_RAW_BASE}/scripts/install.sh | bash -s -- -install node ${host_ip} ${bootstrap}
+curl -fsSL ${REPO_RAW_BASE}/scripts/install.sh | bash -s -- -install node http://${host_ip}:${core_host_port} ${bootstrap}
 EOF
 }
 
