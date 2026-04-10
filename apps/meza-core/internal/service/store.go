@@ -192,7 +192,7 @@ func (s *MemoryStore) CreateJob(input domain.JobCreateInput, plan *domain.AIPlan
 
 	matched := s.resolveTargetNamesLocked(input.TargetSelector)
 	job := domain.Job{
-		ID:               fmt.Sprintf("job-%d", len(s.jobs)+1),
+		ID:               s.nextJobIDLocked(),
 		Type:             input.Type,
 		TargetSelector:   input.TargetSelector,
 		Strategy:         normalizeStrategy(input.Strategy),
@@ -225,6 +225,28 @@ func (s *MemoryStore) CreateJob(input domain.JobCreateInput, plan *domain.AIPlan
 	})
 	s.saveLocked()
 	return job
+}
+
+func (s *MemoryStore) DeleteJob(id, actor string) (domain.Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for idx := range s.jobs {
+		if s.jobs[idx].ID != id {
+			continue
+		}
+
+		job := s.jobs[idx]
+		s.jobs = append(s.jobs[:idx], s.jobs[idx+1:]...)
+		s.appendAuditLocked(actor, "delete", "job", id, "Job deleted", map[string]any{
+			"type":   job.Type,
+			"status": job.Status,
+		})
+		s.saveLocked()
+		return job, nil
+	}
+
+	return domain.Job{}, ErrJobNotFound
 }
 
 func (s *MemoryStore) ApproveJob(id, actor string) (domain.Job, error) {
@@ -471,6 +493,27 @@ func isDemoBootstrapAudit(audit domain.AuditEvent) bool {
 		audit.ResourceType == "fleet" &&
 		audit.ResourceID == "seed" &&
 		audit.Message == "Initialized in-memory demo data"
+}
+
+func (s *MemoryStore) nextJobIDLocked() string {
+	maxID := 0
+	for _, job := range s.jobs {
+		if !strings.HasPrefix(job.ID, "job-") {
+			continue
+		}
+
+		rawNumber := strings.TrimPrefix(job.ID, "job-")
+		id, err := strconv.Atoi(rawNumber)
+		if err != nil {
+			continue
+		}
+
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	return fmt.Sprintf("job-%d", maxID+1)
 }
 
 func (s *MemoryStore) resolveTargetNamesLocked(selector string) []string {

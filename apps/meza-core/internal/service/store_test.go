@@ -36,3 +36,39 @@ func TestStorePersistsStateToDisk(t *testing.T) {
 		t.Fatalf("expected persisted summary, got %q", job.Summary)
 	}
 }
+
+func TestCreateJobIDDoesNotReuseAfterDelete(t *testing.T) {
+	store := NewMemoryStore()
+
+	first := store.CreateJob(domain.JobCreateInput{
+		Type:           "manual_review",
+		TargetSelector: "fleet:all",
+		Strategy:       "all-at-once",
+		CreatedBy:      "tester",
+	}, nil)
+	second := store.CreateJob(domain.JobCreateInput{
+		Type:           "manual_review",
+		TargetSelector: "fleet:all",
+		Strategy:       "all-at-once",
+		CreatedBy:      "tester",
+	}, nil)
+
+	if _, err := store.DeleteJob(first.ID, "tester"); err != nil {
+		t.Fatalf("failed to delete job: %v", err)
+	}
+
+	third := store.CreateJob(domain.JobCreateInput{
+		Type:           "manual_review",
+		TargetSelector: "fleet:all",
+		Strategy:       "all-at-once",
+		CreatedBy:      "tester",
+	}, nil)
+
+	if second.ID != "job-2" {
+		t.Fatalf("expected second id job-2, got %s", second.ID)
+	}
+
+	if third.ID != "job-3" {
+		t.Fatalf("expected third id job-3 after deletion, got %s", third.ID)
+	}
+}

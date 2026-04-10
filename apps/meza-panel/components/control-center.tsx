@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Sparkles,
   Terminal,
+  Trash2,
 } from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -247,6 +248,26 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
       await refreshState();
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : `Не удалось запустить задачу ${id}.`);
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function deleteJob(id: string) {
+    const shouldDelete = window.confirm(`Удалить задачу ${id}? Это действие нельзя отменить.`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    setIsMutating(true);
+    setStatusText("");
+    setErrorText("");
+    try {
+      await requestJson<JobItem>(`/api/jobs/${id}`, { method: "DELETE" });
+      setStatusText(`Задача ${id} удалена.`);
+      await refreshState();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : `Не удалось удалить задачу ${id}.`);
     } finally {
       setIsMutating(false);
     }
@@ -783,6 +804,10 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                           </Button>
                           <Button onClick={() => startJob(job.id)} disabled={!canStart || isMutating}>
                             Запустить
+                          </Button>
+                          <Button variant="destructive" onClick={() => deleteJob(job.id)} disabled={isMutating}>
+                            <Trash2 className="size-4" />
+                            Удалить
                           </Button>
                         </div>
                       </div>

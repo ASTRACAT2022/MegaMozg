@@ -94,6 +94,14 @@ func TestJobLifecycleEndpoints(t *testing.T) {
 	if !bytes.Contains(startRes.Body.Bytes(), []byte(`"status": "completed"`)) {
 		t.Fatalf("expected job to complete, got %s", startRes.Body.String())
 	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/"+created.ID, bytes.NewBufferString(`{"actor":"tester"}`))
+	deleteRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deleteRes, deleteReq)
+
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d", deleteRes.Code)
+	}
 }
 
 func TestDashboardEndpoint(t *testing.T) {

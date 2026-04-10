@@ -44,6 +44,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/jobs", s.requireAuth(scopeOperator, s.handleCreateJob))
 	s.mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.requireAuth(scopeOperator, s.handleApproveJob))
 	s.mux.HandleFunc("POST /api/v1/jobs/{id}/start", s.requireAuth(scopeOperator, s.handleStartJob))
+	s.mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.requireAuth(scopeOperator, s.handleDeleteJob))
 	s.mux.HandleFunc("POST /api/v1/terminal/stream", s.requireAuth(scopeOperator, s.handleTerminalStream))
 	s.mux.HandleFunc("GET /api/v1/audit", s.requireAuth(scopeOperator, s.handleListAuditEvents))
 	s.mux.HandleFunc("POST /api/v1/ai/interpret", s.requireAuth(scopeOperator, s.handleAIInterpret))
@@ -165,6 +166,22 @@ func (s *Server) handleStartJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job, err := s.store.StartJob(r.PathValue("id"), input.Actor)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
+	var input domain.JobActionInput
+	_ = json.NewDecoder(r.Body).Decode(&input)
+	if input.Actor == "" {
+		input.Actor = "operator"
+	}
+
+	job, err := s.store.DeleteJob(r.PathValue("id"), input.Actor)
 	if err != nil {
 		writeStoreError(w, err)
 		return
