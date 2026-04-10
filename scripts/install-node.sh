@@ -125,36 +125,48 @@ STATUS="${HEARTBEAT_STATUS:-online}"
 NET_PREV_BYTES=0
 NET_PREV_TS=0
 
+log() {
+  echo "[meza-node-heartbeat] $*" >&2
+}
+
 read_cpu_percent() {
   if [[ ! -r /proc/stat ]]; then
     echo 0
-    return
+    return 0
   fi
 
   # shellcheck disable=SC2207
-  local cpu_a=($(awk '/^cpu /{print $2, $3, $4, $5, $6, $7, $8, $9, $10}' /proc/stat))
+  local cpu_a=($(awk '/^cpu /{print $2, $3, $4, $5, $6, $7, $8, $9, $10}' /proc/stat 2>/dev/null || true))
+  if (( ${#cpu_a[@]} == 0 )); then
+    echo 0
+    return 0
+  fi
   local idle_a="${cpu_a[3]:-0}"
   local total_a=0
   local value
   for value in "${cpu_a[@]}"; do
-    total_a=$((total_a + value))
+    total_a=$((total_a + ${value:-0}))
   done
 
   sleep 0.5
 
   # shellcheck disable=SC2207
-  local cpu_b=($(awk '/^cpu /{print $2, $3, $4, $5, $6, $7, $8, $9, $10}' /proc/stat))
+  local cpu_b=($(awk '/^cpu /{print $2, $3, $4, $5, $6, $7, $8, $9, $10}' /proc/stat 2>/dev/null || true))
+  if (( ${#cpu_b[@]} == 0 )); then
+    echo 0
+    return 0
+  fi
   local idle_b="${cpu_b[3]:-0}"
   local total_b=0
   for value in "${cpu_b[@]}"; do
-    total_b=$((total_b + value))
+    total_b=$((total_b + ${value:-0}))
   done
 
   local total_delta=$((total_b - total_a))
   local idle_delta=$((idle_b - idle_a))
   if (( total_delta <= 0 )); then
     echo 0
-    return
+    return 0
   fi
 
   local busy=$((total_delta - idle_delta))
@@ -162,57 +174,70 @@ read_cpu_percent() {
   if (( cpu_percent < 0 )); then cpu_percent=0; fi
   if (( cpu_percent > 100 )); then cpu_percent=100; fi
   echo "${cpu_percent}"
+  return 0
 }
 
 read_ram_percent() {
   if [[ ! -r /proc/meminfo ]]; then
     echo 0
-    return
+    return 0
   fi
 
   local total available used
-  total="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
-  available="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)"
+  total="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || true)"
+  available="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || true)"
   if [[ -z "${total}" || -z "${available}" || "${total}" -le 0 ]]; then
     echo 0
-    return
+    return 0
   fi
 
   used=$((total - available))
   if (( used < 0 )); then used=0; fi
   echo $((used * 100 / total))
+  return 0
 }
 
 read_disk_percent() {
   local disk
-  disk="$(df -P / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"
+  disk="$(df -P / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}' 2>/dev/null || true)"
   if [[ -z "${disk}" ]]; then
     echo 0
-    return
+    return 0
   fi
   echo "${disk}"
+  return 0
 }
 
 read_network_kbps() {
   if [[ ! -r /proc/net/dev ]]; then
     echo 0
-    return
+    return 0
   fi
 
-  local now total_bytes line rx tx delta_bytes delta_time kbps
+  local now total_bytes line iface rest rx tx delta_bytes delta_time kbps
+  local -a fields
   now="$(date +%s)"
   total_bytes=0
-  while read -r line; do
-    rx="$(awk '{print $2}' <<<"${line}")"
-    tx="$(awk '{print $10}' <<<"${line}")"
+  while IFS= read -r line; do
+    [[ "${line}" != *:* ]] && continue
+    iface="${line%%:*}"
+    iface="${iface// /}"
+    [[ "${iface}" == "lo" ]] && continue
+
+    rest="${line#*:}"
+    # Fields in /proc/net/dev after ":" are:
+    # rx_bytes rx_packets rx_errs rx_drop rx_fifo rx_frame rx_compressed rx_multicast tx_bytes ...
+    read -r -a fields <<<"${rest}"
+    rx="${fields[0]:-0}"
+    tx="${fields[8]:-0}"
     total_bytes=$((total_bytes + rx + tx))
-  done < <(awk -F'[: ]+' 'NR>2 && $1 != "lo" {print $0}' /proc/net/dev)
+  done </proc/net/dev
 
   if (( NET_PREV_TS == 0 || NET_PREV_BYTES == 0 )); then
     NET_PREV_TS="${now}"
     NET_PREV_BYTES="${total_bytes}"
     echo 0
-    return
+    return 0
   fi
 
   delta_time=$((now - NET_PREV_TS))
@@ -222,12 +247,13 @@ read_network_kbps() {
 
   if (( delta_time <= 0 || delta_bytes < 0 )); then
     echo 0
-    return
+    return 0
   fi
 
   kbps=$(((delta_bytes * 8) / 1000 / delta_time))
   if (( kbps < 0 )); then kbps=0; fi
   echo "${kbps}"
+  return 0
 }
 
 read_load_average() {
@@ -235,34 +261,58 @@ read_load_average() {
   load="$(awk '{print $1}' /proc/loadavg 2>/dev/null || true)"
   if [[ -z "${load}" ]]; then
     echo 0
-    return
+    return 0
   fi
   awk -v v="${load}" 'BEGIN {printf "%d\n", v+0}'
+  return 0
 }
 
 read_process_count() {
-  local count
-  count="$(ps -e --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+  local output count
+  if ! output="$(ps ax 2>/dev/null || true)"; then
+    echo 0
+    return 0
+  fi
+
+  count="$(printf "%s\n" "${output}" | awk 'NR>1{c++} END {print c+0}' 2>/dev/null || true)"
   if [[ -z "${count}" ]]; then
     echo 0
-    return
+    return 0
   fi
+
   echo "${count}"
+  return 0
+}
+
+safe_metric() {
+  local fn="$1"
+  local value
+  if value="$("${fn}" 2>/dev/null || true)"; then
+    value="${value//[!0-9]/}"
+    if [[ -n "${value}" ]]; then
+      echo "${value}"
+      return 0
+    fi
+  fi
+  echo 0
+  return 0
 }
 
 while true; do
-  CPU_PERCENT="$(read_cpu_percent)"
-  RAM_PERCENT="$(read_ram_percent)"
-  DISK_PERCENT="$(read_disk_percent)"
-  NETWORK_KBPS="$(read_network_kbps)"
-  LOAD_AVERAGE="$(read_load_average)"
-  PROCESSES_COUNT="$(read_process_count)"
+  CPU_PERCENT="$(safe_metric read_cpu_percent)"
+  RAM_PERCENT="$(safe_metric read_ram_percent)"
+  DISK_PERCENT="$(safe_metric read_disk_percent)"
+  NETWORK_KBPS="$(safe_metric read_network_kbps)"
+  LOAD_AVERAGE="$(safe_metric read_load_average)"
+  PROCESSES_COUNT="$(safe_metric read_process_count)"
 
-  curl -fsS -X POST "${CORE_URL}/api/v1/nodes/heartbeat" \
+  if ! curl -fsS --connect-timeout 5 --max-time 10 -X POST "${CORE_URL}/api/v1/nodes/heartbeat" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"ip_address\":\"${NODE_IP}\",\"tags\":${TAGS_JSON},\"status\":\"${STATUS}\",\"metrics\":{\"cpu_percent\":${CPU_PERCENT},\"ram_percent\":${RAM_PERCENT},\"disk_percent\":${DISK_PERCENT},\"network_kbps\":${NETWORK_KBPS},\"load_average\":${LOAD_AVERAGE},\"processes_count\":${PROCESSES_COUNT}}}" \
-    >/dev/null || true
+    >/dev/null; then
+    log "heartbeat send failed: core=${CORE_URL} node=${NODE_NAME} ip=${NODE_IP}"
+  fi
   sleep "${INTERVAL}"
 done
 EOF
@@ -289,20 +339,18 @@ WantedBy=multi-user.target
 EOF
   run_as_root install -m 644 "${TMP_SERVICE}" "/etc/systemd/system/${SERVICE_NAME}.service"
   run_as_root systemctl daemon-reload
-  run_as_root systemctl enable --now "${SERVICE_NAME}.service"
+  run_as_root systemctl enable "${SERVICE_NAME}.service"
+  run_as_root systemctl restart "${SERVICE_NAME}.service"
   SERVICE_MODE="systemd"
 else
   LOG_FILE="${INSTALL_DIR}/heartbeat.log"
   PID_FILE="${INSTALL_DIR}/heartbeat.pid"
+  if run_as_root test -f "${PID_FILE}"; then
+    run_as_root sh -c "kill \$(cat '${PID_FILE}') >/dev/null 2>&1 || true"
+  fi
   run_as_root sh -c "nohup '${BIN_PATH}' >> '${LOG_FILE}' 2>&1 & echo \$! > '${PID_FILE}'"
   SERVICE_MODE="background"
 fi
-
-curl -fsSL -X POST "${CORE_URL}/api/v1/nodes/heartbeat" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"ip_address\":\"${NODE_IP}\",\"tags\":${TAGS_JSON},\"status\":\"${HEARTBEAT_STATUS}\",\"metrics\":{\"cpu_percent\":0,\"ram_percent\":0,\"disk_percent\":0,\"network_kbps\":0,\"load_average\":0,\"processes_count\":0}}" \
-  >/dev/null || true
 
 echo
 echo "Node registered and connected automatically."
