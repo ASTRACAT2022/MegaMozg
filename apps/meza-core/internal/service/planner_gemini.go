@@ -136,7 +136,7 @@ func (p *GeminiPlanner) plan(prompt string) (domain.AIPlannedOperation, error) {
 		Tools: []geminiTool{{
 			FunctionDeclarations: []geminiFunctionDeclaration{plannerFunctionDeclaration()},
 		}},
-		ToolConfig: geminiToolConfig{
+		ToolConfig: &geminiToolConfig{
 			FunctionCallingConfig: geminiFunctionCallingConfig{
 				Mode:                 "ANY",
 				AllowedFunctionNames: []string{"plan_typed_job"},
@@ -351,7 +351,7 @@ type geminiRequest struct {
 	SystemInstruction geminiContent          `json:"systemInstruction,omitempty"`
 	Contents          []geminiContent        `json:"contents"`
 	Tools             []geminiTool           `json:"tools,omitempty"`
-	ToolConfig        geminiToolConfig       `json:"toolConfig,omitempty"`
+	ToolConfig        *geminiToolConfig      `json:"toolConfig,omitempty"`
 	GenerationConfig  geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 

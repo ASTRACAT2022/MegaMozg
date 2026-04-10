@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -91,6 +92,53 @@ func TestGeminiPlannerFallsBackOnFailure(t *testing.T) {
 	}
 	if plan.Intent != "planner_error" {
 		t.Fatalf("expected planner_error intent, got %q", plan.Intent)
+	}
+}
+
+func TestGeminiPlannerChatDoesNotSendEmptyToolConfig(t *testing.T) {
+	planner := NewGeminiPlanner(GeminiPlannerConfig{
+		APIKey:  "gemini-test-key",
+		Model:   "gemini-2.5-flash",
+		BaseURL: "https://example.invalid/v1beta",
+		Timeout: 2 * time.Second,
+	}, NewStubPlanner())
+
+	planner.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			raw, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("failed to read request body: %v", err)
+			}
+
+			if strings.Contains(string(raw), `"toolConfig"`) {
+				t.Fatalf("chat request must not include toolConfig, got: %s", string(raw))
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatalf("invalid request json: %v", err)
+			}
+
+			return jsonResponse(`{
+			  "candidates": [
+			    {
+			      "content": {
+			        "parts": [
+			          { "text": "Я AI-агент MezaMozg." }
+			        ]
+			      }
+			    }
+			  ]
+			}`), nil
+		}),
+	}
+
+	reply, err := planner.Chat("кто ты")
+	if err != nil {
+		t.Fatalf("expected chat reply without error, got: %v", err)
+	}
+	if !strings.Contains(reply, "MezaMozg") {
+		t.Fatalf("unexpected chat reply: %q", reply)
 	}
 }
 
