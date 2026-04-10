@@ -42,7 +42,7 @@ npm run dev -- --hostname 0.0.0.0 --port 3000
 
 - `http://localhost:3000`
 
-Для docker-режима прод-доступа панель поднимается по HTTPS на `https://localhost:1499` с self-signed сертификатом.
+Для docker-режима прод-доступа панель поднимается по HTTPS на `https://localhost:1499` с self-signed сертификатом (`deploy/certs/panel.crt`).
 
 ## 3. Вкладки панели
 
@@ -126,7 +126,12 @@ docker compose up --build
 - `meza-panel`: `https://127.0.0.1:1499` (self-signed SSL)
 
 При первом открытии браузер покажет предупреждение сертификата, это ожидаемо для self-signed.
-Если открываешь по IP, убедись что в `.env` выставлен `MEZA_PANEL_TLS_HOST=<ПУБЛИЧНЫЙ_IP>`, затем перезапусти `meza-panel-ssl`.
+Если меняется IP сервера, перевыпусти сертификат:
+
+```bash
+bash scripts/generate-panel-cert.sh <ПУБЛИЧНЫЙ_IP> deploy/certs
+docker compose up -d --force-recreate meza-panel-ssl
+```
 
 ## 8. Установка ноды без ручных действий
 

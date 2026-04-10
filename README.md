@@ -153,7 +153,7 @@ curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/
 ```
 
 What it does:
-- `-install hub`: installs Docker stack (`meza-core` + `meza-panel` + SSL proxy), generates tokens, starts services.
+- `-install hub`: installs Docker stack (`meza-core` + `meza-panel` + SSL proxy), generates tokens, creates self-signed TLS cert with SAN for server IP, starts services.
 - `-install node`: auto-registers node and starts heartbeat service with no extra clicks.
 - If host `8080` is busy, installer auto-picks another host port for core (for example `18080`), while panel remains on `1499`.
 
@@ -167,7 +167,7 @@ docker compose up --build
 This brings up:
 
 - `meza-core` on `http://127.0.0.1:8080`
-- `meza-panel` behind HTTPS on `https://localhost:1499` (self-signed via Caddy internal CA)
+- `meza-panel` behind HTTPS on `https://localhost:1499` (self-signed cert from `deploy/certs/panel.crt`)
 
 ## Gemini Planner
 

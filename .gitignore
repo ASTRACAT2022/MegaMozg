@@ -10,3 +10,5 @@ apps/meza-core/meza-core
 apps/meza-node/target
 data
 .env
+deploy/certs/*.crt
+deploy/certs/*.key
