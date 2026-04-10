@@ -1,0 +1,189 @@
+openapi: 3.1.0
+info:
+  title: MezaMozg API
+  version: 0.1.0
+  description: Safe-by-default orchestration control plane API.
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      summary: Service health check
+      responses:
+        "200":
+          description: Service is healthy
+  /readyz:
+    get:
+      summary: Service readiness check
+      responses:
+        "200":
+          description: Service is ready
+  /api/v1/nodes:
+    get:
+      summary: List nodes
+      responses:
+        "200":
+          description: Node list
+  /api/v1/dashboard:
+    get:
+      summary: Get dashboard summary
+      responses:
+        "200":
+          description: Dashboard snapshot
+  /api/v1/nodes/register:
+    post:
+      summary: Register a new node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterNodeRequest"
+      responses:
+        "201":
+          description: Node registered
+  /api/v1/nodes/heartbeat:
+    post:
+      summary: Submit node heartbeat and metrics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeHeartbeatRequest"
+      responses:
+        "200":
+          description: Node updated
+  /api/v1/jobs:
+    get:
+      summary: List jobs
+      responses:
+        "200":
+          description: Job list
+    post:
+      summary: Create a job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+      responses:
+        "201":
+          description: Job created
+  /api/v1/jobs/{id}:
+    get:
+      summary: Get job details
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job details
+  /api/v1/jobs/{id}/approve:
+    post:
+      summary: Approve a job
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job approved
+  /api/v1/jobs/{id}/start:
+    post:
+      summary: Start a job
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job started
+  /api/v1/audit:
+    get:
+      summary: List audit events
+      responses:
+        "200":
+          description: Audit list
+  /api/v1/ai/interpret:
+    post:
+      summary: Interpret natural-language operator intent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AIInterpretRequest"
+      responses:
+        "200":
+          description: Planned typed job preview
+  /api/v1/ai/plan-and-create:
+    post:
+      summary: Interpret natural-language intent and create a job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AIInterpretRequest"
+      responses:
+        "201":
+          description: Planned and created
+components:
+  schemas:
+    RegisterNodeRequest:
+      type: object
+      required: [name, region]
+      properties:
+        name:
+          type: string
+        region:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    CreateJobRequest:
+      type: object
+      required: [type, target_selector, strategy]
+      properties:
+        type:
+          type: string
+        target_selector:
+          type: string
+        strategy:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+    NodeHeartbeatRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        region:
+          type: string
+        status:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        metrics:
+          type: object
+          additionalProperties: true
+    AIInterpretRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          type: string

@@ -1,0 +1,650 @@
+package service
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/mezamozg/meza-core/internal/domain"
+)
+
+var (
+	ErrJobNotFound      = errors.New("job not found")
+	ErrJobNeedsApproval = errors.New("job requires approval before start")
+	ErrJobCannotStart   = errors.New("job cannot be started from its current state")
+	ErrJobCannotApprove = errors.New("job cannot be approved from its current state")
+)
+
+type MemoryStore struct {
+	mu          sync.RWMutex
+	nodes       []domain.Node
+	jobs        []domain.Job
+	audits      []domain.AuditEvent
+	persistPath string
+}
+
+func NewMemoryStore() *MemoryStore {
+	store, err := NewMemoryStoreWithFile("")
+	if err != nil {
+		panic(err)
+	}
+	return store
+}
+
+type persistedState struct {
+	Nodes  []domain.Node       `json:"nodes"`
+	Jobs   []domain.Job        `json:"jobs"`
+	Audits []domain.AuditEvent `json:"audits"`
+}
+
+func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
+	if persistPath != "" {
+		if state, err := loadState(persistPath); err == nil {
+			return &MemoryStore{
+				nodes:       state.Nodes,
+				jobs:        state.Jobs,
+				audits:      state.Audits,
+				persistPath: persistPath,
+			}, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+
+	now := time.Now().UTC()
+
+	store := &MemoryStore{
+		persistPath: persistPath,
+		nodes: []domain.Node{
+			{
+				ID:     "node-argentina-17",
+				Name:   "argentina-17",
+				Region: "south-america",
+				Tags:   []string{"docker", "prod", "argentina"},
+				Status: "online",
+				Metrics: domain.NodeMetrics{
+					CPUPercent:     37,
+					RAMPercent:     44,
+					DiskPercent:    52,
+					NetworkKbps:    940,
+					LoadAverage:    1,
+					ProcessesCount: 112,
+				},
+				LastSeenAt: now,
+				CreatedAt:  now,
+			},
+			{
+				ID:     "node-moscow-01",
+				Name:   "moscow-01",
+				Region: "ru-central",
+				Tags:   []string{"frontend", "staging", "moscow"},
+				Status: "online",
+				Metrics: domain.NodeMetrics{
+					CPUPercent:     61,
+					RAMPercent:     58,
+					DiskPercent:    48,
+					NetworkKbps:    670,
+					LoadAverage:    2,
+					ProcessesCount: 154,
+				},
+				LastSeenAt: now,
+				CreatedAt:  now,
+			},
+			{
+				ID:     "node-berlin-05",
+				Name:   "berlin-05",
+				Region: "eu-central",
+				Tags:   []string{"db", "prod", "legacy"},
+				Status: "degraded",
+				Metrics: domain.NodeMetrics{
+					CPUPercent:     88,
+					RAMPercent:     79,
+					DiskPercent:    84,
+					NetworkKbps:    420,
+					LoadAverage:    5,
+					ProcessesCount: 238,
+				},
+				LastSeenAt: now.Add(-2 * time.Minute),
+				CreatedAt:  now,
+			},
+		},
+		jobs: []domain.Job{
+			{
+				ID:             "job-boot-1",
+				Type:           "package_refresh",
+				TargetSelector: "tag:staging",
+				Strategy:       "rolling:10,25,50,100",
+				Status:         "approved",
+				Payload:        map[string]any{"manager": "apt"},
+				CreatedAt:      now,
+				CreatedBy:      "system",
+				Summary:        "Refresh package metadata on staging nodes.",
+				MatchedNodes:   []string{"moscow-01"},
+				Rollout: domain.RolloutProgress{
+					Mode:           "rolling",
+					TotalNodes:     1,
+					CompletedNodes: 0,
+					FailedNodes:    0,
+					Batches:        []domain.RolloutBatch{},
+				},
+			},
+		},
+	}
+
+	store.appendAudit("system", "bootstrap", "fleet", "seed", "Initialized in-memory demo data", nil)
+	return store, nil
+}
+
+func (s *MemoryStore) ListNodes() []domain.Node {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]domain.Node, len(s.nodes))
+	copy(out, s.nodes)
+	return out
+}
+
+func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node := domain.Node{
+		ID:     fmt.Sprintf("node-%d", len(s.nodes)+1),
+		Name:   input.Name,
+		Region: input.Region,
+		Tags:   input.Tags,
+		Status: "online",
+		Metrics: domain.NodeMetrics{
+			CPUPercent:     0,
+			RAMPercent:     0,
+			DiskPercent:    0,
+			NetworkKbps:    0,
+			LoadAverage:    0,
+			ProcessesCount: 0,
+		},
+		LastSeenAt: time.Now().UTC(),
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	s.nodes = append(s.nodes, node)
+	s.appendAuditLocked("bootstrap-token", "register", "node", node.ID, "Node registered", map[string]any{
+		"name":   node.Name,
+		"region": node.Region,
+	})
+	s.saveLocked()
+	return node
+}
+
+func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	for idx := range s.nodes {
+		if s.nodes[idx].Name == input.Name {
+			s.nodes[idx].Region = coalesce(input.Region, s.nodes[idx].Region)
+			s.nodes[idx].Tags = fallbackTags(input.Tags, s.nodes[idx].Tags)
+			s.nodes[idx].Status = coalesce(input.Status, s.nodes[idx].Status)
+			s.nodes[idx].Metrics = input.Metrics
+			s.nodes[idx].LastSeenAt = now
+
+			s.appendAuditLocked("meza-node", "heartbeat", "node", s.nodes[idx].ID, "Node heartbeat received", map[string]any{
+				"name":   s.nodes[idx].Name,
+				"status": s.nodes[idx].Status,
+			})
+			s.saveLocked()
+			return s.nodes[idx]
+		}
+	}
+
+	node := domain.Node{
+		ID:         fmt.Sprintf("node-%d", len(s.nodes)+1),
+		Name:       input.Name,
+		Region:     coalesce(input.Region, "unknown-region"),
+		Tags:       input.Tags,
+		Status:     coalesce(input.Status, "online"),
+		Metrics:    input.Metrics,
+		LastSeenAt: now,
+		CreatedAt:  now,
+	}
+	s.nodes = append(s.nodes, node)
+	s.appendAuditLocked("meza-node", "heartbeat-register", "node", node.ID, "Node heartbeat created a new inventory record", map[string]any{
+		"name": node.Name,
+	})
+	s.saveLocked()
+	return node
+}
+
+func (s *MemoryStore) ListJobs() []domain.Job {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]domain.Job, len(s.jobs))
+	copy(out, s.jobs)
+	return out
+}
+
+func (s *MemoryStore) GetJob(id string) (domain.Job, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, job := range s.jobs {
+		if job.ID == id {
+			return job, nil
+		}
+	}
+
+	return domain.Job{}, ErrJobNotFound
+}
+
+func (s *MemoryStore) CreateJob(input domain.JobCreateInput, plan *domain.AIPlannedOperation) domain.Job {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	approval := requiresApproval(input.Type)
+	status := "approved"
+	if approval {
+		status = "awaiting_approval"
+	}
+
+	if input.CreatedBy == "" {
+		input.CreatedBy = "operator"
+	}
+
+	matched := s.resolveTargetNamesLocked(input.TargetSelector)
+	job := domain.Job{
+		ID:               fmt.Sprintf("job-%d", len(s.jobs)+1),
+		Type:             input.Type,
+		TargetSelector:   input.TargetSelector,
+		Strategy:         normalizeStrategy(input.Strategy),
+		Status:           status,
+		Payload:          input.Payload,
+		CreatedAt:        time.Now().UTC(),
+		CreatedBy:        input.CreatedBy,
+		RequiresApproval: approval,
+		Summary:          input.Summary,
+		MatchedNodes:     matched,
+		Rollout: domain.RolloutProgress{
+			Mode:           rolloutMode(input.Strategy),
+			TotalNodes:     len(matched),
+			CompletedNodes: 0,
+			FailedNodes:    0,
+			Batches:        []domain.RolloutBatch{},
+		},
+		Plan: plan,
+	}
+
+	if job.Summary == "" {
+		job.Summary = fmt.Sprintf("Execute %s on %s", job.Type, job.TargetSelector)
+	}
+
+	s.jobs = append(s.jobs, job)
+	s.appendAuditLocked(input.CreatedBy, "create", "job", job.ID, "Job created", map[string]any{
+		"type":             job.Type,
+		"target_selector":  job.TargetSelector,
+		"requiresApproval": job.RequiresApproval,
+	})
+	s.saveLocked()
+	return job
+}
+
+func (s *MemoryStore) ApproveJob(id, actor string) (domain.Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for idx := range s.jobs {
+		if s.jobs[idx].ID != id {
+			continue
+		}
+
+		if s.jobs[idx].Status != "awaiting_approval" {
+			return domain.Job{}, ErrJobCannotApprove
+		}
+
+		now := time.Now().UTC()
+		s.jobs[idx].Status = "approved"
+		s.jobs[idx].ApprovedBy = actor
+		s.jobs[idx].ApprovedAt = &now
+		s.appendAuditLocked(actor, "approve", "job", id, "Job approved", map[string]any{
+			"type": s.jobs[idx].Type,
+		})
+		s.saveLocked()
+		return s.jobs[idx], nil
+	}
+
+	return domain.Job{}, ErrJobNotFound
+}
+
+func (s *MemoryStore) StartJob(id, actor string) (domain.Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for idx := range s.jobs {
+		if s.jobs[idx].ID != id {
+			continue
+		}
+
+		job := &s.jobs[idx]
+		if job.RequiresApproval && job.Status == "awaiting_approval" {
+			return domain.Job{}, ErrJobNeedsApproval
+		}
+		if job.Status != "approved" && job.Status != "planned" {
+			return domain.Job{}, ErrJobCannotStart
+		}
+
+		now := time.Now().UTC()
+		job.Status = "running"
+		job.StartedAt = &now
+		job.Rollout.Mode = rolloutMode(job.Strategy)
+		job.Rollout.TotalNodes = len(job.MatchedNodes)
+		simulateRollout(job, s.nodes)
+
+		if job.Status == "running" {
+			job.Status = "completed"
+			done := time.Now().UTC()
+			job.CompletedAt = &done
+		}
+
+		s.appendAuditLocked(actor, "start", "job", id, "Job execution started", map[string]any{
+			"status": job.Status,
+		})
+		s.saveLocked()
+		return *job, nil
+	}
+
+	return domain.Job{}, ErrJobNotFound
+}
+
+func (s *MemoryStore) ListAuditEvents() []domain.AuditEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]domain.AuditEvent, len(s.audits))
+	copy(out, s.audits)
+	slices.Reverse(out)
+	return out
+}
+
+func (s *MemoryStore) DashboardSummary() domain.DashboardSummary {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var summary domain.DashboardSummary
+	summary.TotalNodes = len(s.nodes)
+	summary.AuditEvents = len(s.audits)
+
+	var totalCPU, totalRAM, totalDisk int
+	for _, node := range s.nodes {
+		if node.Status == "online" {
+			summary.OnlineNodes++
+		}
+		if node.Status == "degraded" {
+			summary.DegradedNodes++
+		}
+
+		totalCPU += node.Metrics.CPUPercent
+		totalRAM += node.Metrics.RAMPercent
+		totalDisk += node.Metrics.DiskPercent
+	}
+
+	for _, job := range s.jobs {
+		if job.Status == "running" {
+			summary.RunningJobs++
+		}
+		if job.Status == "awaiting_approval" {
+			summary.AwaitingApprovals++
+		}
+	}
+
+	if len(s.nodes) > 0 {
+		summary.AverageCPU = round1(float64(totalCPU) / float64(len(s.nodes)))
+		summary.AverageRAM = round1(float64(totalRAM) / float64(len(s.nodes)))
+		summary.AverageDisk = round1(float64(totalDisk) / float64(len(s.nodes)))
+	}
+
+	return summary
+}
+
+func (s *MemoryStore) appendAudit(actor, action, resourceType, resourceID, message string, metadata map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendAuditLocked(actor, action, resourceType, resourceID, message, metadata)
+	s.saveLocked()
+}
+
+func (s *MemoryStore) appendAuditLocked(actor, action, resourceType, resourceID, message string, metadata map[string]any) {
+	event := domain.AuditEvent{
+		ID:           fmt.Sprintf("audit-%d", len(s.audits)+1),
+		Actor:        actor,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		Message:      message,
+		Metadata:     metadata,
+		CreatedAt:    time.Now().UTC(),
+	}
+	s.audits = append(s.audits, event)
+}
+
+func (s *MemoryStore) saveLocked() {
+	if s.persistPath == "" {
+		return
+	}
+
+	state := persistedState{
+		Nodes:  s.nodes,
+		Jobs:   s.jobs,
+		Audits: s.audits,
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return
+	}
+
+	_ = os.MkdirAll(filepath.Dir(s.persistPath), 0o755)
+	tmpPath := s.persistPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmpPath, s.persistPath)
+}
+
+func loadState(path string) (persistedState, error) {
+	var state persistedState
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return state, err
+	}
+
+	if err := json.Unmarshal(data, &state); err != nil {
+		return state, err
+	}
+
+	return state, nil
+}
+
+func (s *MemoryStore) resolveTargetNamesLocked(selector string) []string {
+	selector = strings.TrimSpace(selector)
+	if selector == "" || selector == "fleet:all" {
+		return collectNodeNames(s.nodes)
+	}
+
+	if strings.HasPrefix(selector, "node:") {
+		name := strings.TrimPrefix(selector, "node:")
+		for _, node := range s.nodes {
+			if node.Name == name || node.ID == name {
+				return []string{node.Name}
+			}
+		}
+		return nil
+	}
+
+	if strings.HasPrefix(selector, "tag:") {
+		tag := strings.TrimPrefix(selector, "tag:")
+		var matched []string
+		for _, node := range s.nodes {
+			if slices.Contains(node.Tags, tag) {
+				matched = append(matched, node.Name)
+			}
+		}
+		return matched
+	}
+
+	return nil
+}
+
+func collectNodeNames(nodes []domain.Node) []string {
+	out := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, node.Name)
+	}
+	return out
+}
+
+func normalizeStrategy(strategy string) string {
+	if strategy == "" {
+		return "all-at-once"
+	}
+	if strings.HasPrefix(strategy, "rolling:") {
+		return strategy
+	}
+	if strategy == "rolling" {
+		return "rolling:10,25,50,100"
+	}
+	return strategy
+}
+
+func rolloutMode(strategy string) string {
+	if strings.HasPrefix(strategy, "rolling") {
+		return "rolling"
+	}
+	return "all-at-once"
+}
+
+func parseStrategy(strategy string, total int) []int {
+	if total <= 0 {
+		return []int{100}
+	}
+
+	if !strings.HasPrefix(strategy, "rolling:") {
+		return []int{100}
+	}
+
+	raw := strings.TrimPrefix(strategy, "rolling:")
+	parts := strings.Split(raw, ",")
+	var out []int
+	for _, part := range parts {
+		v, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || v <= 0 || v > 100 {
+			continue
+		}
+		out = append(out, v)
+	}
+	if len(out) == 0 || out[len(out)-1] != 100 {
+		out = append(out, 100)
+	}
+	return out
+}
+
+func simulateRollout(job *domain.Job, nodes []domain.Node) {
+	targeted := resolveNodesForJob(job.MatchedNodes, nodes)
+	checkpoints := parseStrategy(job.Strategy, len(targeted))
+	seen := map[string]bool{}
+
+	for idx, percent := range checkpoints {
+		batchNodes := cumulativeBatch(targeted, percent, seen)
+		if len(batchNodes) == 0 {
+			continue
+		}
+
+		batch := domain.RolloutBatch{
+			Label:         fmt.Sprintf("%d%%", percent),
+			TargetedNodes: collectNodeNames(batchNodes),
+			Status:        "completed",
+			UpdatedAt:     time.Now().UTC(),
+		}
+
+		for _, node := range batchNodes {
+			if node.Status == "degraded" || slices.Contains(node.Tags, "legacy") {
+				batch.FailedNodes++
+				job.Rollout.FailedNodes++
+				continue
+			}
+			batch.CompletedNodes++
+			job.Rollout.CompletedNodes++
+		}
+
+		if batch.FailedNodes > 0 && job.Rollout.Mode == "rolling" {
+			batch.Status = "paused"
+			job.Rollout.Batches = append(job.Rollout.Batches, batch)
+			job.Rollout.CurrentBatchIndex = idx + 1
+			job.Rollout.CurrentBatchLabel = batch.Label
+			job.Status = "paused"
+			return
+		}
+
+		job.Rollout.Batches = append(job.Rollout.Batches, batch)
+		job.Rollout.CurrentBatchIndex = idx + 1
+		job.Rollout.CurrentBatchLabel = batch.Label
+	}
+}
+
+func resolveNodesForJob(matched []string, nodes []domain.Node) []domain.Node {
+	var out []domain.Node
+	for _, name := range matched {
+		for _, node := range nodes {
+			if node.Name == name {
+				out = append(out, node)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func cumulativeBatch(nodes []domain.Node, percent int, seen map[string]bool) []domain.Node {
+	cutoff := (len(nodes) * percent) / 100
+	if cutoff == 0 && len(nodes) > 0 {
+		cutoff = 1
+	}
+	if cutoff > len(nodes) {
+		cutoff = len(nodes)
+	}
+
+	var batch []domain.Node
+	for _, node := range nodes[:cutoff] {
+		if seen[node.Name] {
+			continue
+		}
+		seen[node.Name] = true
+		batch = append(batch, node)
+	}
+	return batch
+}
+
+func round1(value float64) float64 {
+	return float64(int(value*10+0.5)) / 10
+}
+
+func coalesce(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func fallbackTags(value, fallback []string) []string {
+	if len(value) == 0 {
+		return fallback
+	}
+	return value
+}
