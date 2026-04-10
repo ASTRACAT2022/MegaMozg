@@ -150,9 +150,23 @@ func streamLocalExec(ctx context.Context, w io.Writer, flusher http.Flusher, com
 
 	readPipe := func(prefix string, pipe io.Reader) {
 		defer wg.Done()
-		scanner := bufio.NewScanner(pipe)
-		for scanner.Scan() {
-			lines <- streamLine{prefix: prefix, text: scanner.Text()}
+		reader := bufio.NewReaderSize(pipe, 64*1024)
+		for {
+			chunk, readErr := reader.ReadString('\n')
+			if chunk != "" {
+				lines <- streamLine{
+					prefix: prefix,
+					text:   strings.TrimRight(chunk, "\r\n"),
+				}
+			}
+
+			if readErr == io.EOF {
+				return
+			}
+			if readErr != nil {
+				lines <- streamLine{prefix: prefix, text: fmt.Sprintf("[read-error] %v", readErr)}
+				return
+			}
 		}
 	}
 
@@ -177,6 +191,10 @@ func streamLocalExec(ctx context.Context, w io.Writer, flusher http.Flusher, com
 				if err := <-waitErr; err != nil {
 					return fmt.Errorf("command failed: %w", err)
 				}
+				writeSSE(w, "line", map[string]any{
+					"line": "[info] command finished",
+				})
+				flusher.Flush()
 				return nil
 			}
 			writeSSE(w, "line", map[string]any{

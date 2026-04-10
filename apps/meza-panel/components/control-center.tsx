@@ -1037,7 +1037,9 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                         <StatusBadge status={item.status} />
                       </div>
                       <p className="mt-2 rounded bg-muted/40 px-2 py-1 font-mono text-xs">{item.command}</p>
-                      <p className="mt-2 text-sm">{item.output}</p>
+                      <pre className="mt-2 max-h-60 overflow-auto rounded bg-muted/20 p-2 font-mono text-xs whitespace-pre-wrap">
+                        {item.output}
+                      </pre>
                       <p className="text-muted-foreground mt-2 text-xs">{formatTime(item.createdAt)}</p>
                     </div>
                   ))}
