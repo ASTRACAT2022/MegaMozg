@@ -47,6 +47,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.requireAuth(scopeOperator, s.handleDeleteJob))
 	s.mux.HandleFunc("POST /api/v1/terminal/stream", s.requireAuth(scopeOperator, s.handleTerminalStream))
 	s.mux.HandleFunc("GET /api/v1/audit", s.requireAuth(scopeOperator, s.handleListAuditEvents))
+	s.mux.HandleFunc("GET /api/v1/ai/config", s.requireAuth(scopeOperator, s.handleAIConfig))
+	s.mux.HandleFunc("POST /api/v1/ai/config", s.requireAuth(scopeOperator, s.handleAIConfigUpdate))
 	s.mux.HandleFunc("POST /api/v1/ai/interpret", s.requireAuth(scopeOperator, s.handleAIInterpret))
 	s.mux.HandleFunc("POST /api/v1/ai/plan-and-create", s.requireAuth(scopeOperator, s.handleAIPlanAndCreate))
 }
@@ -196,6 +198,33 @@ func (s *Server) handleListAuditEvents(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (s *Server) handleAIConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.currentAIConfig())
+}
+
+func (s *Server) handleAIConfigUpdate(w http.ResponseWriter, r *http.Request) {
+	var input domain.AIConfigUpdateInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	settings := s.store.UpdateAISettings(input)
+	if planner, ok := s.planner.(service.AIConfigurablePlanner); ok {
+		planner.ApplySettings(settings)
+		writeJSON(w, http.StatusOK, planner.CurrentConfig())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, domain.AIConfig{
+		Provider:        settings.Provider,
+		GeminiModel:     settings.GeminiModel,
+		GeminiBaseURL:   settings.GeminiBaseURL,
+		HasGeminiAPIKey: settings.GeminiAPIKey != "",
+		UpdatedAt:       settings.UpdatedAt,
+	})
+}
+
 func (s *Server) handleAIInterpret(w http.ResponseWriter, r *http.Request) {
 	var input domain.AIInterpretRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -225,12 +254,35 @@ func (s *Server) handleAIPlanAndCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	plan := s.planner.Interpret(input.Prompt)
+	if plan.Provider == "gemini-missing-key" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "Gemini API key is missing. Configure it in /api/v1/ai/config first.",
+			"plan":  plan,
+		})
+		return
+	}
+
 	job := s.store.CreateJob(plan.JobPreview, &plan)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"plan": plan,
 		"job":  job,
 	})
+}
+
+func (s *Server) currentAIConfig() domain.AIConfig {
+	if planner, ok := s.planner.(service.AIConfigurablePlanner); ok {
+		return planner.CurrentConfig()
+	}
+
+	settings := s.store.GetAISettings()
+	return domain.AIConfig{
+		Provider:        settings.Provider,
+		GeminiModel:     settings.GeminiModel,
+		GeminiBaseURL:   settings.GeminiBaseURL,
+		HasGeminiAPIKey: settings.GeminiAPIKey != "",
+		UpdatedAt:       settings.UpdatedAt,
+	}
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

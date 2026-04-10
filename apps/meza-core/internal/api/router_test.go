@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mezamozg/meza-core/internal/domain"
 	"github.com/mezamozg/meza-core/internal/service"
 )
 
@@ -39,6 +40,42 @@ func TestAIInterpretEndpoint(t *testing.T) {
 
 	if !bytes.Contains(res.Body.Bytes(), []byte(`"intent": "update_docker"`)) {
 		t.Fatalf("expected response to include update_docker plan, got %s", res.Body.String())
+	}
+}
+
+func TestAIConfigEndpoints(t *testing.T) {
+	planner := service.NewRuntimePlanner(service.RuntimePlannerConfig{
+		Provider: domain.DefaultAIProvider,
+		Fallback: service.NewStubPlanner(),
+	})
+	server := NewServer(service.NewMemoryStore(), planner, AuthConfig{})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/ai/config", nil)
+	getRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("expected GET config 200, got %d", getRes.Code)
+	}
+
+	updateBody := bytes.NewBufferString(`{
+	  "provider":"gemini",
+	  "gemini_api_key":"test-key",
+	  "gemini_model":"gemini-2.5-flash",
+	  "gemini_base_url":"https://generativelanguage.googleapis.com/v1beta"
+	}`)
+	updateReq := httptest.NewRequest(http.MethodPost, "/api/v1/ai/config", updateBody)
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusOK {
+		t.Fatalf("expected update config 200, got %d, body=%s", updateRes.Code, updateRes.Body.String())
+	}
+
+	if !bytes.Contains(updateRes.Body.Bytes(), []byte(`"provider": "gemini"`)) {
+		t.Fatalf("expected provider gemini, got %s", updateRes.Body.String())
+	}
+	if !bytes.Contains(updateRes.Body.Bytes(), []byte(`"has_gemini_api_key": true`)) {
+		t.Fatalf("expected has_gemini_api_key=true, got %s", updateRes.Body.String())
 	}
 }
 

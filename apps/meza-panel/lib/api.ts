@@ -64,11 +64,20 @@ export type AIPlanResult = {
   };
 };
 
+export type AIConfig = {
+  provider: string;
+  gemini_model: string;
+  gemini_base_url: string;
+  has_gemini_api_key: boolean;
+  updated_at?: string;
+};
+
 export type PanelData = {
   dashboard: DashboardSummary;
   nodes: NodeItem[];
   jobs: JobItem[];
   audit: AuditItem[];
+  aiConfig: AIConfig;
   apiReachable: boolean;
   samplePlan: AIPlanResult;
 };
@@ -88,6 +97,12 @@ const fallbackData: PanelData = {
   nodes: [],
   jobs: [],
   audit: [],
+  aiConfig: {
+    provider: "stub",
+    gemini_model: "gemini-2.5-flash",
+    gemini_base_url: "https://generativelanguage.googleapis.com/v1beta",
+    has_gemini_api_key: false,
+  },
   apiReachable: false,
   samplePlan: {
     prompt: "",
@@ -146,11 +161,12 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export async function loadPanelData(): Promise<PanelData> {
   try {
-    const [dashboard, nodes, jobs, audit, samplePlan] = await Promise.all([
+    const [dashboard, nodes, jobs, audit, aiConfig, samplePlan] = await Promise.all([
       fetchJson<DashboardSummary>("/api/v1/dashboard"),
       fetchJson<ApiList<NodeItem>>("/api/v1/nodes"),
       fetchJson<ApiList<JobItem>>("/api/v1/jobs"),
       fetchJson<ApiList<AuditItem>>("/api/v1/audit"),
+      fetchJson<AIConfig>("/api/v1/ai/config"),
       postJson<PanelData["samplePlan"]>("/api/v1/ai/interpret", {
         prompt: "обнови docker на ноде argentina-17",
       }),
@@ -161,6 +177,7 @@ export async function loadPanelData(): Promise<PanelData> {
       nodes: nodes.items,
       jobs: jobs.items,
       audit: audit.items.slice(0, 5),
+      aiConfig,
       apiReachable: true,
       samplePlan,
     };

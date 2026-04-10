@@ -27,7 +27,7 @@ import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import type { AIPlanResult, JobItem, PanelData } from "@/lib/api";
+import type { AIConfig, AIPlanResult, JobItem, PanelData } from "@/lib/api";
 import type { AlertItem } from "@/lib/alerts";
 
 type PanelState = PanelData & { alerts: AlertItem[] };
@@ -68,6 +68,13 @@ type TerminalHistoryItem = {
 };
 
 type TerminalExecMode = "job_simulated" | "local_exec";
+
+type AIConfigFormState = {
+  provider: "stub" | "gemini";
+  gemini_api_key: string;
+  gemini_model: string;
+  gemini_base_url: string;
+};
 
 const initialJobForm: JobFormState = {
   type: "bash_script",
@@ -172,6 +179,13 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
   const [terminalHistory, setTerminalHistory] = useState<TerminalHistoryItem[]>([]);
   const [isTerminalRunning, setIsTerminalRunning] = useState(false);
   const [terminalLiveOutput, setTerminalLiveOutput] = useState<string>("");
+  const [aiConfigForm, setAIConfigForm] = useState<AIConfigFormState>({
+    provider: initialState.aiConfig.provider === "gemini" ? "gemini" : "stub",
+    gemini_api_key: "",
+    gemini_model: initialState.aiConfig.gemini_model || "gemini-2.5-flash",
+    gemini_base_url: initialState.aiConfig.gemini_base_url || "https://generativelanguage.googleapis.com/v1beta",
+  });
+  const [clearGeminiKey, setClearGeminiKey] = useState(false);
 
   const cards = useMemo(() => summaryCards(state), [state]);
 
@@ -180,6 +194,12 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
     try {
       const nextState = await requestJson<PanelState>("/api/state");
       setState(nextState);
+      setAIConfigForm((prev) => ({
+        ...prev,
+        provider: nextState.aiConfig.provider === "gemini" ? "gemini" : "stub",
+        gemini_model: nextState.aiConfig.gemini_model || "gemini-2.5-flash",
+        gemini_base_url: nextState.aiConfig.gemini_base_url || "https://generativelanguage.googleapis.com/v1beta",
+      }));
       setErrorText("");
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "Не удалось обновить состояние.");
@@ -276,6 +296,11 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
   async function sendAgentMessage() {
     const content = chatInput.trim();
     if (!content) return;
+    if (state.aiConfig.provider === "gemini" && !state.aiConfig.has_gemini_api_key) {
+      setErrorText("Gemini выбран, но API ключ не задан. Добавьте ключ в настройках AI.");
+      setActiveTab("agent");
+      return;
+    }
 
     setIsChatSending(true);
     setErrorText("");
@@ -322,6 +347,57 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
       setErrorText(message);
     } finally {
       setIsChatSending(false);
+    }
+  }
+
+  async function saveAIConfig() {
+    setIsMutating(true);
+    setStatusText("");
+    setErrorText("");
+    try {
+      const provider = aiConfigForm.provider === "gemini" ? "gemini" : "stub";
+      const model = aiConfigForm.gemini_model.trim();
+      const baseURL = aiConfigForm.gemini_base_url.trim();
+      const key = aiConfigForm.gemini_api_key.trim();
+
+      if (provider === "gemini" && !key && !clearGeminiKey && !state.aiConfig.has_gemini_api_key) {
+        throw new Error("Укажи Gemini API key, иначе агент не сможет выполнять запросы.");
+      }
+
+      const body: Record<string, unknown> = {
+        provider,
+        gemini_model: model || "gemini-2.5-flash",
+        gemini_base_url: baseURL || "https://generativelanguage.googleapis.com/v1beta",
+      };
+      if (key) {
+        body.gemini_api_key = key;
+      }
+      if (clearGeminiKey) {
+        body.clear_gemini_api_key = true;
+      }
+
+      const updated = await requestJson<AIConfig>("/api/ai/config", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+
+      setState((prev) => ({
+        ...prev,
+        aiConfig: updated,
+      }));
+      setAIConfigForm((prev) => ({
+        ...prev,
+        provider: updated.provider === "gemini" ? "gemini" : "stub",
+        gemini_model: updated.gemini_model || "gemini-2.5-flash",
+        gemini_base_url: updated.gemini_base_url || "https://generativelanguage.googleapis.com/v1beta",
+        gemini_api_key: "",
+      }));
+      setClearGeminiKey(false);
+      setStatusText(`AI настройки сохранены. Провайдер: ${updated.provider}.`);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Не удалось сохранить AI настройки.");
+    } finally {
+      setIsMutating(false);
     }
   }
 
@@ -989,10 +1065,87 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Подсказки для оператора</CardTitle>
-                  <CardDescription>Как формулировать запросы, чтобы агент сработал точнее.</CardDescription>
+                  <CardTitle>Настройки AI (Gemini)</CardTitle>
+                  <CardDescription>Введи API ключ один раз, и агент будет работать через Gemini.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium">Текущий провайдер</p>
+                      <Badge variant="outline">{state.aiConfig.provider}</Badge>
+                    </div>
+                    <p className="text-muted-foreground">
+                      Ключ Gemini: {state.aiConfig.has_gemini_api_key ? "задан" : "не задан"}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Провайдер</p>
+                    <select
+                      className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                      value={aiConfigForm.provider}
+                      onChange={(event) =>
+                        setAIConfigForm((prev) => ({
+                          ...prev,
+                          provider: event.target.value === "gemini" ? "gemini" : "stub",
+                        }))
+                      }
+                    >
+                      <option value="stub">stub (локальный fallback)</option>
+                      <option value="gemini">gemini (реальный AI)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Gemini API key</p>
+                    <Input
+                      type="password"
+                      value={aiConfigForm.gemini_api_key}
+                      onChange={(event) =>
+                        setAIConfigForm((prev) => ({
+                          ...prev,
+                          gemini_api_key: event.target.value,
+                        }))
+                      }
+                      placeholder="AIza..."
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Gemini model</p>
+                    <Input
+                      value={aiConfigForm.gemini_model}
+                      onChange={(event) =>
+                        setAIConfigForm((prev) => ({
+                          ...prev,
+                          gemini_model: event.target.value,
+                        }))
+                      }
+                      placeholder="gemini-2.5-flash"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Gemini base URL</p>
+                    <Input
+                      value={aiConfigForm.gemini_base_url}
+                      onChange={(event) =>
+                        setAIConfigForm((prev) => ({
+                          ...prev,
+                          gemini_base_url: event.target.value,
+                        }))
+                      }
+                      placeholder="https://generativelanguage.googleapis.com/v1beta"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-input"
+                      checked={clearGeminiKey}
+                      onChange={(event) => setClearGeminiKey(event.target.checked)}
+                    />
+                    Очистить сохранённый API ключ Gemini
+                  </label>
+                  <Button onClick={saveAIConfig} disabled={isMutating}>
+                    Сохранить AI настройки
+                  </Button>
                   <div className="rounded-lg border p-3">
                     <p className="font-medium">Пример 1</p>
                     <p className="text-muted-foreground">«Обнови docker на ноде argentina-17»</p>

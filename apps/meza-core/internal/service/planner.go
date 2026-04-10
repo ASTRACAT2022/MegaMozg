@@ -6,6 +6,12 @@ type Planner interface {
 	Interpret(prompt string) domain.AIPlannedOperation
 }
 
+type AIConfigurablePlanner interface {
+	Planner
+	ApplySettings(settings domain.AISettings)
+	CurrentConfig() domain.AIConfig
+}
+
 type FallbackPlanner struct {
 	primary  Planner
 	fallback Planner

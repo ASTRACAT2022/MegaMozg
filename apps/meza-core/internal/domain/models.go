@@ -2,6 +2,12 @@ package domain
 
 import "time"
 
+const (
+	DefaultAIProvider    = "stub"
+	DefaultGeminiModel   = "gemini-2.5-flash"
+	DefaultGeminiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
+)
+
 type Node struct {
 	ID         string      `json:"id"`
 	Name       string      `json:"name"`
@@ -86,6 +92,30 @@ type DashboardSummary struct {
 
 type AIInterpretRequest struct {
 	Prompt string `json:"prompt"`
+}
+
+type AIConfig struct {
+	Provider        string     `json:"provider"`
+	GeminiModel     string     `json:"gemini_model"`
+	GeminiBaseURL   string     `json:"gemini_base_url"`
+	HasGeminiAPIKey bool       `json:"has_gemini_api_key"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+}
+
+type AIConfigUpdateInput struct {
+	Provider          string `json:"provider"`
+	GeminiAPIKey      string `json:"gemini_api_key"`
+	ClearGeminiAPIKey bool   `json:"clear_gemini_api_key"`
+	GeminiModel       string `json:"gemini_model"`
+	GeminiBaseURL     string `json:"gemini_base_url"`
+}
+
+type AISettings struct {
+	Provider      string     `json:"provider"`
+	GeminiAPIKey  string     `json:"gemini_api_key"`
+	GeminiModel   string     `json:"gemini_model"`
+	GeminiBaseURL string     `json:"gemini_base_url"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
 }
 
 type AIPlannedOperation struct {

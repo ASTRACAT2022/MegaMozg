@@ -27,6 +27,7 @@ type MemoryStore struct {
 	nodes       []domain.Node
 	jobs        []domain.Job
 	audits      []domain.AuditEvent
+	aiSettings  domain.AISettings
 	persistPath string
 }
 
@@ -39,9 +40,10 @@ func NewMemoryStore() *MemoryStore {
 }
 
 type persistedState struct {
-	Nodes  []domain.Node       `json:"nodes"`
-	Jobs   []domain.Job        `json:"jobs"`
-	Audits []domain.AuditEvent `json:"audits"`
+	Nodes      []domain.Node       `json:"nodes"`
+	Jobs       []domain.Job        `json:"jobs"`
+	Audits     []domain.AuditEvent `json:"audits"`
+	AISettings domain.AISettings   `json:"ai_settings"`
 }
 
 func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
@@ -58,6 +60,7 @@ func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 				nodes:       state.Nodes,
 				jobs:        state.Jobs,
 				audits:      state.Audits,
+				aiSettings:  normalizeAISettings(state.AISettings),
 				persistPath: persistPath,
 			}, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -70,6 +73,7 @@ func NewMemoryStoreWithFile(persistPath string) (*MemoryStore, error) {
 		nodes:       []domain.Node{},
 		jobs:        []domain.Job{},
 		audits:      []domain.AuditEvent{},
+		aiSettings:  normalizeAISettings(domain.AISettings{}),
 	}
 	return store, nil
 }
@@ -366,6 +370,45 @@ func (s *MemoryStore) DashboardSummary() domain.DashboardSummary {
 	return summary
 }
 
+func (s *MemoryStore) GetAISettings() domain.AISettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.aiSettings
+}
+
+func (s *MemoryStore) UpdateAISettings(input domain.AIConfigUpdateInput) domain.AISettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := s.aiSettings
+
+	if strings.TrimSpace(input.Provider) != "" {
+		next.Provider = input.Provider
+	}
+	if strings.TrimSpace(input.GeminiModel) != "" {
+		next.GeminiModel = input.GeminiModel
+	}
+	if strings.TrimSpace(input.GeminiBaseURL) != "" {
+		next.GeminiBaseURL = input.GeminiBaseURL
+	}
+
+	if input.ClearGeminiAPIKey {
+		next.GeminiAPIKey = ""
+	} else if strings.TrimSpace(input.GeminiAPIKey) != "" {
+		next.GeminiAPIKey = input.GeminiAPIKey
+	}
+
+	next = normalizeAISettings(next)
+	s.aiSettings = next
+	s.appendAuditLocked("operator", "ai-config-update", "ai", "provider", "AI provider settings updated", map[string]any{
+		"provider": next.Provider,
+		"model":    next.GeminiModel,
+	})
+	s.saveLocked()
+	return s.aiSettings
+}
+
 func (s *MemoryStore) appendAudit(actor, action, resourceType, resourceID, message string, metadata map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -393,9 +436,10 @@ func (s *MemoryStore) saveLocked() {
 	}
 
 	if err := saveState(s.persistPath, persistedState{
-		Nodes:  s.nodes,
-		Jobs:   s.jobs,
-		Audits: s.audits,
+		Nodes:      s.nodes,
+		Jobs:       s.jobs,
+		Audits:     s.audits,
+		AISettings: s.aiSettings,
 	}); err != nil {
 		return
 	}
@@ -472,9 +516,10 @@ func sanitizeSeededDemoState(state persistedState) (persistedState, bool) {
 	}
 
 	return persistedState{
-		Nodes:  filteredNodes,
-		Jobs:   filteredJobs,
-		Audits: filteredAudits,
+		Nodes:      filteredNodes,
+		Jobs:       filteredJobs,
+		Audits:     filteredAudits,
+		AISettings: state.AISettings,
 	}, true
 }
 

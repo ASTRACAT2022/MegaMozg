@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mezamozg/meza-core/internal/api"
+	"github.com/mezamozg/meza-core/internal/domain"
 	"github.com/mezamozg/meza-core/internal/service"
 )
 
@@ -19,7 +20,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize store: %v", err)
 	}
-	planner := buildPlanner(cfg)
+	planner := buildPlanner(cfg, store.GetAISettings())
 	server := api.NewServer(store, planner, api.AuthConfig{
 		OperatorToken:    cfg.OperatorToken,
 		BootstrapToken:   cfg.BootstrapToken,
@@ -79,25 +80,28 @@ func loadConfig() config {
 		BootstrapToken:   envOrDefault("MEZA_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
 		NodeToken:        envOrDefault("MEZA_NODE_TOKEN", "dev-node-token"),
 		AllowAnonymousUI: envOrDefault("MEZA_ALLOW_ANONYMOUS_UI", "false") == "true",
-		AIProvider:       envOrDefault("MEZA_AI_PROVIDER", "stub"),
+		AIProvider:       envOrDefault("MEZA_AI_PROVIDER", domain.DefaultAIProvider),
 		GeminiAPIKey:     os.Getenv("MEZA_GEMINI_API_KEY"),
-		GeminiModel:      envOrDefault("MEZA_GEMINI_MODEL", "gemini-2.5-flash"),
-		GeminiBaseURL:    envOrDefault("MEZA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+		GeminiModel:      envOrDefault("MEZA_GEMINI_MODEL", domain.DefaultGeminiModel),
+		GeminiBaseURL:    envOrDefault("MEZA_GEMINI_BASE_URL", domain.DefaultGeminiBaseURL),
 	}
 }
 
-func buildPlanner(cfg config) service.Planner {
-	fallback := service.NewStubPlanner()
-	if cfg.AIProvider != "gemini" {
-		return fallback
+func buildPlanner(cfg config, persisted domain.AISettings) service.Planner {
+	planner := service.NewRuntimePlanner(service.RuntimePlannerConfig{
+		Provider:      cfg.AIProvider,
+		GeminiAPIKey:  cfg.GeminiAPIKey,
+		GeminiModel:   cfg.GeminiModel,
+		GeminiBaseURL: cfg.GeminiBaseURL,
+		Timeout:       15 * time.Second,
+		Fallback:      service.NewStubPlanner(),
+	})
+
+	if persisted.Provider != "" || persisted.GeminiAPIKey != "" || persisted.GeminiModel != "" || persisted.GeminiBaseURL != "" {
+		planner.ApplySettings(persisted)
 	}
 
-	return service.NewGeminiPlanner(service.GeminiPlannerConfig{
-		APIKey:  cfg.GeminiAPIKey,
-		Model:   cfg.GeminiModel,
-		BaseURL: cfg.GeminiBaseURL,
-		Timeout: 15 * time.Second,
-	}, fallback)
+	return planner
 }
 
 func envOrDefault(key, fallback string) string {
