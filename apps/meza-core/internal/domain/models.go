@@ -9,14 +9,16 @@ const (
 )
 
 type Node struct {
-	ID         string      `json:"id"`
-	Name       string      `json:"name"`
-	Region     string      `json:"region"`
-	Tags       []string    `json:"tags"`
-	Status     string      `json:"status"`
-	Metrics    NodeMetrics `json:"metrics"`
-	LastSeenAt time.Time   `json:"last_seen_at"`
-	CreatedAt  time.Time   `json:"created_at"`
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	DisplayName string      `json:"display_name"`
+	IPAddress   string      `json:"ip_address"`
+	Region      string      `json:"region"`
+	Tags        []string    `json:"tags"`
+	Status      string      `json:"status"`
+	Metrics     NodeMetrics `json:"metrics"`
+	LastSeenAt  time.Time   `json:"last_seen_at"`
+	CreatedAt   time.Time   `json:"created_at"`
 }
 
 type NodeMetrics struct {
@@ -128,17 +130,23 @@ type AIPlannedOperation struct {
 }
 
 type NodeRegisterInput struct {
-	Name   string   `json:"name"`
-	Region string   `json:"region"`
-	Tags   []string `json:"tags"`
+	Name      string   `json:"name"`
+	Region    string   `json:"region"`
+	Tags      []string `json:"tags"`
+	IPAddress string   `json:"ip_address"`
 }
 
 type NodeHeartbeatInput struct {
-	Name    string      `json:"name"`
-	Region  string      `json:"region"`
-	Tags    []string    `json:"tags"`
-	Status  string      `json:"status"`
-	Metrics NodeMetrics `json:"metrics"`
+	Name      string      `json:"name"`
+	Region    string      `json:"region"`
+	Tags      []string    `json:"tags"`
+	Status    string      `json:"status"`
+	IPAddress string      `json:"ip_address"`
+	Metrics   NodeMetrics `json:"metrics"`
+}
+
+type NodeUpdateInput struct {
+	DisplayName string `json:"display_name"`
 }
 
 type JobCreateInput struct {

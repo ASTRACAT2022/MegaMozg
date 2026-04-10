@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/mezamozg/meza-core/internal/domain"
 	"github.com/mezamozg/meza-core/internal/service"
@@ -37,6 +39,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /readyz", s.handleReady)
 	s.mux.HandleFunc("GET /api/v1/dashboard", s.requireAuth(scopeOperator, s.handleDashboard))
 	s.mux.HandleFunc("GET /api/v1/nodes", s.requireAuth(scopeOperator, s.handleListNodes))
+	s.mux.HandleFunc("PATCH /api/v1/nodes/{id}", s.requireAuth(scopeOperator, s.handleUpdateNode))
 	s.mux.HandleFunc("POST /api/v1/nodes/register", s.requireAuth(scopeBootstrap, s.handleRegisterNode))
 	s.mux.HandleFunc("POST /api/v1/nodes/heartbeat", s.requireAuthAny([]authScope{scopeNode, scopeBootstrap}, s.handleHeartbeatNode))
 	s.mux.HandleFunc("GET /api/v1/jobs", s.requireAuth(scopeOperator, s.handleListJobs))
@@ -87,6 +90,9 @@ func (s *Server) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and region are required"})
 		return
 	}
+	if strings.TrimSpace(input.IPAddress) == "" {
+		input.IPAddress = resolveClientIP(r)
+	}
 
 	node := s.store.RegisterNode(input)
 	writeJSON(w, http.StatusCreated, node)
@@ -103,8 +109,31 @@ func (s *Server) handleHeartbeatNode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
+	if strings.TrimSpace(input.IPAddress) == "" {
+		input.IPAddress = resolveClientIP(r)
+	}
 
 	node := s.store.HeartbeatNode(input)
+	writeJSON(w, http.StatusOK, node)
+}
+
+func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
+	var input domain.NodeUpdateInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	node, err := s.store.UpdateNode(r.PathValue("id"), input, "operator")
+	if err != nil {
+		if errors.Is(err, service.ErrNodeNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, node)
 }
 
@@ -283,6 +312,27 @@ func (s *Server) currentAIConfig() domain.AIConfig {
 		HasGeminiAPIKey: settings.GeminiAPIKey != "",
 		UpdatedAt:       settings.UpdatedAt,
 	}
+}
+
+func resolveClientIP(r *http.Request) string {
+	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		if first != "" {
+			return first
+		}
+	}
+
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

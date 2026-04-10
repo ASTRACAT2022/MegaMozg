@@ -35,10 +35,11 @@ export function buildAlerts(data: Pick<PanelData, "dashboard" | "nodes" | "jobs"
 
   const hotNodes = data.nodes.filter((node) => node.metrics.cpu_percent >= 85 || node.metrics.ram_percent >= 85);
   hotNodes.forEach((node) => {
+    const nodeName = node.display_name || node.name;
     alerts.push({
       id: `hot-${node.id}`,
       level: "critical",
-      title: `Высокая нагрузка: ${node.name}`,
+      title: `Высокая нагрузка: ${nodeName}`,
       message: `CPU ${node.metrics.cpu_percent}%, RAM ${node.metrics.ram_percent}%.`,
       source: "metrics",
     });

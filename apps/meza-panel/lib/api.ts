@@ -20,6 +20,8 @@ type NodeMetrics = {
 export type NodeItem = {
   id: string;
   name: string;
+  display_name: string;
+  ip_address: string;
   region: string;
   tags: string[];
   status: string;

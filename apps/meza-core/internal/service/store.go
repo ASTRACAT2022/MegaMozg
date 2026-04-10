@@ -20,6 +20,7 @@ var (
 	ErrJobNeedsApproval = errors.New("job requires approval before start")
 	ErrJobCannotStart   = errors.New("job cannot be started from its current state")
 	ErrJobCannotApprove = errors.New("job cannot be approved from its current state")
+	ErrNodeNotFound     = errors.New("node not found")
 )
 
 type MemoryStore struct {
@@ -92,11 +93,12 @@ func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
 	defer s.mu.Unlock()
 
 	node := domain.Node{
-		ID:     fmt.Sprintf("node-%d", len(s.nodes)+1),
-		Name:   input.Name,
-		Region: input.Region,
-		Tags:   input.Tags,
-		Status: "online",
+		ID:        fmt.Sprintf("node-%d", len(s.nodes)+1),
+		Name:      input.Name,
+		IPAddress: strings.TrimSpace(input.IPAddress),
+		Region:    input.Region,
+		Tags:      input.Tags,
+		Status:    "online",
 		Metrics: domain.NodeMetrics{
 			CPUPercent:     0,
 			RAMPercent:     0,
@@ -111,8 +113,9 @@ func (s *MemoryStore) RegisterNode(input domain.NodeRegisterInput) domain.Node {
 
 	s.nodes = append(s.nodes, node)
 	s.appendAuditLocked("bootstrap-token", "register", "node", node.ID, "Node registered", map[string]any{
-		"name":   node.Name,
-		"region": node.Region,
+		"name":      node.Name,
+		"region":    node.Region,
+		"ipAddress": node.IPAddress,
 	})
 	s.saveLocked()
 	return node
@@ -128,12 +131,14 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 			s.nodes[idx].Region = coalesce(input.Region, s.nodes[idx].Region)
 			s.nodes[idx].Tags = fallbackTags(input.Tags, s.nodes[idx].Tags)
 			s.nodes[idx].Status = coalesce(input.Status, s.nodes[idx].Status)
+			s.nodes[idx].IPAddress = coalesce(input.IPAddress, s.nodes[idx].IPAddress)
 			s.nodes[idx].Metrics = input.Metrics
 			s.nodes[idx].LastSeenAt = now
 
 			s.appendAuditLocked("meza-node", "heartbeat", "node", s.nodes[idx].ID, "Node heartbeat received", map[string]any{
-				"name":   s.nodes[idx].Name,
-				"status": s.nodes[idx].Status,
+				"name":      s.nodes[idx].Name,
+				"status":    s.nodes[idx].Status,
+				"ipAddress": s.nodes[idx].IPAddress,
 			})
 			s.saveLocked()
 			return s.nodes[idx]
@@ -143,6 +148,7 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 	node := domain.Node{
 		ID:         fmt.Sprintf("node-%d", len(s.nodes)+1),
 		Name:       input.Name,
+		IPAddress:  strings.TrimSpace(input.IPAddress),
 		Region:     coalesce(input.Region, "unknown-region"),
 		Tags:       input.Tags,
 		Status:     coalesce(input.Status, "online"),
@@ -152,10 +158,31 @@ func (s *MemoryStore) HeartbeatNode(input domain.NodeHeartbeatInput) domain.Node
 	}
 	s.nodes = append(s.nodes, node)
 	s.appendAuditLocked("meza-node", "heartbeat-register", "node", node.ID, "Node heartbeat created a new inventory record", map[string]any{
-		"name": node.Name,
+		"name":      node.Name,
+		"ipAddress": node.IPAddress,
 	})
 	s.saveLocked()
 	return node
+}
+
+func (s *MemoryStore) UpdateNode(id string, input domain.NodeUpdateInput, actor string) (domain.Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for idx := range s.nodes {
+		if s.nodes[idx].ID != id {
+			continue
+		}
+
+		s.nodes[idx].DisplayName = strings.TrimSpace(input.DisplayName)
+		s.appendAuditLocked(actor, "update", "node", id, "Node metadata updated", map[string]any{
+			"displayName": s.nodes[idx].DisplayName,
+		})
+		s.saveLocked()
+		return s.nodes[idx], nil
+	}
+
+	return domain.Node{}, ErrNodeNotFound
 }
 
 func (s *MemoryStore) ListJobs() []domain.Job {
@@ -570,7 +597,7 @@ func (s *MemoryStore) resolveTargetNamesLocked(selector string) []string {
 	if strings.HasPrefix(selector, "node:") {
 		name := strings.TrimPrefix(selector, "node:")
 		for _, node := range s.nodes {
-			if node.Name == name || node.ID == name {
+			if node.Name == name || node.DisplayName == name || node.ID == name {
 				return []string{node.Name}
 			}
 		}

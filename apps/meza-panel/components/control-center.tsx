@@ -27,7 +27,7 @@ import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import type { AIConfig, AIPlanResult, JobItem, PanelData } from "@/lib/api";
+import type { AIConfig, AIPlanResult, JobItem, NodeItem, PanelData } from "@/lib/api";
 import type { AlertItem } from "@/lib/alerts";
 
 type PanelState = PanelData & { alerts: AlertItem[] };
@@ -179,6 +179,9 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
   const [terminalHistory, setTerminalHistory] = useState<TerminalHistoryItem[]>([]);
   const [isTerminalRunning, setIsTerminalRunning] = useState(false);
   const [terminalLiveOutput, setTerminalLiveOutput] = useState<string>("");
+  const [nodeDisplayNameDrafts, setNodeDisplayNameDrafts] = useState<Record<string, string>>(() =>
+    Object.fromEntries(initialState.nodes.map((node) => [node.id, node.display_name || ""]))
+  );
   const [aiConfigForm, setAIConfigForm] = useState<AIConfigFormState>({
     provider: initialState.aiConfig.provider === "gemini" ? "gemini" : "stub",
     gemini_api_key: "",
@@ -194,6 +197,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
     try {
       const nextState = await requestJson<PanelState>("/api/state");
       setState(nextState);
+      setNodeDisplayNameDrafts(Object.fromEntries(nextState.nodes.map((node) => [node.id, node.display_name || ""])));
       setAIConfigForm((prev) => ({
         ...prev,
         provider: nextState.aiConfig.provider === "gemini" ? "gemini" : "stub",
@@ -210,6 +214,36 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
 
   function patchJobForm<K extends keyof JobFormState>(key: K, value: JobFormState[K]) {
     setJobForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function patchNodeDisplayNameDraft(nodeId: string, value: string) {
+    setNodeDisplayNameDrafts((prev) => ({
+      ...prev,
+      [nodeId]: value,
+    }));
+  }
+
+  async function saveNodeDisplayName(nodeId: string) {
+    setIsMutating(true);
+    setStatusText("");
+    setErrorText("");
+    try {
+      const displayName = (nodeDisplayNameDrafts[nodeId] ?? "").trim();
+      const updated = await requestJson<NodeItem>(`/api/nodes/${nodeId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ display_name: displayName }),
+      });
+      setStatusText(
+        displayName
+          ? `Имя ноды ${updated.name} обновлено на «${updated.display_name}».`
+          : `Пользовательское имя для ${updated.name} очищено.`
+      );
+      await refreshState();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "Не удалось обновить имя ноды.");
+    } finally {
+      setIsMutating(false);
+    }
   }
 
   async function createJob() {
@@ -705,6 +739,8 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Нода</TableHead>
+                      <TableHead>IP</TableHead>
+                      <TableHead>Имя в панели</TableHead>
                       <TableHead>Статус</TableHead>
                       <TableHead>Теги</TableHead>
                       <TableHead className="w-[180px]">CPU</TableHead>
@@ -716,10 +752,26 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                       <TableRow key={node.id}>
                         <TableCell className="align-top">
                           <div className="space-y-1">
-                            <div className="font-medium">{node.name}</div>
+                            <div className="font-medium">{node.display_name || node.name}</div>
+                            <div className="text-muted-foreground text-xs">Системное: {node.name}</div>
                             <div className="text-muted-foreground text-xs">
                               {node.region} · {formatTime(node.last_seen_at)}
                             </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="font-mono text-sm">{node.ip_address || "—"}</div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="flex min-w-[220px] gap-2">
+                            <Input
+                              value={nodeDisplayNameDrafts[node.id] ?? ""}
+                              onChange={(event) => patchNodeDisplayNameDraft(node.id, event.target.value)}
+                              placeholder="Например: DB Москва"
+                            />
+                            <Button variant="outline" onClick={() => saveNodeDisplayName(node.id)} disabled={isMutating}>
+                              Сохранить
+                            </Button>
                           </div>
                         </TableCell>
                         <TableCell className="align-top">
@@ -916,7 +968,7 @@ export function ControlCenter({ initialState }: { initialState: PanelState }) {
                     >
                       {state.nodes.map((node) => (
                         <option key={node.id} value={node.name}>
-                          {node.name} ({node.region})
+                          {node.display_name || node.name} ({node.region})
                         </option>
                       ))}
                     </select>

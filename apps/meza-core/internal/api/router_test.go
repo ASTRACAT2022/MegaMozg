@@ -157,6 +157,47 @@ func TestDashboardEndpoint(t *testing.T) {
 	}
 }
 
+func TestNodeRegisterCapturesIPAndAllowsDisplayNameUpdate(t *testing.T) {
+	server := NewServer(service.NewMemoryStore(), service.NewStubPlanner(), AuthConfig{})
+
+	registerBody := bytes.NewBufferString(`{
+	  "name":"node-a",
+	  "region":"ru-central",
+	  "tags":["prod"]
+	}`)
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/register", registerBody)
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerReq.RemoteAddr = "203.0.113.7:43123"
+	registerRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(registerRes, registerReq)
+
+	if registerRes.Code != http.StatusCreated {
+		t.Fatalf("expected register 201, got %d", registerRes.Code)
+	}
+	if !bytes.Contains(registerRes.Body.Bytes(), []byte(`"ip_address": "203.0.113.7"`)) {
+		t.Fatalf("expected registered node to include captured ip, got %s", registerRes.Body.String())
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(registerRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+created.ID, bytes.NewBufferString(`{"display_name":"DB Moscow 01"}`))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(updateRes, updateReq)
+
+	if updateRes.Code != http.StatusOK {
+		t.Fatalf("expected update node 200, got %d", updateRes.Code)
+	}
+	if !bytes.Contains(updateRes.Body.Bytes(), []byte(`"display_name": "DB Moscow 01"`)) {
+		t.Fatalf("expected display_name in response, got %s", updateRes.Body.String())
+	}
+}
+
 func TestOperatorAuth(t *testing.T) {
 	server := NewServer(service.NewMemoryStore(), service.NewStubPlanner(), AuthConfig{
 		OperatorToken: "secret-operator-token",

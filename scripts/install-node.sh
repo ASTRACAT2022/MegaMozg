@@ -5,6 +5,7 @@ TOKEN=""
 CORE_URL="${MEZA_CORE_URL:-http://127.0.0.1:8080}"
 NODE_NAME="${MEZA_NODE_NAME:-$(hostname | tr '[:upper:]' '[:lower:]')}"
 NODE_REGION="${MEZA_NODE_REGION:-unknown-region}"
+NODE_IP="${MEZA_NODE_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
 TAGS="${MEZA_NODE_TAGS:-}"
 HEARTBEAT_INTERVAL="${MEZA_HEARTBEAT_INTERVAL:-15}"
 HEARTBEAT_STATUS="${MEZA_HEARTBEAT_STATUS:-online}"
@@ -73,6 +74,7 @@ echo "arch=${ARCH}"
 echo "core_url=${CORE_URL}"
 echo "node_name=${NODE_NAME}"
 echo "region=${NODE_REGION}"
+echo "node_ip=${NODE_IP:-unknown}"
 echo "heartbeat_interval=${HEARTBEAT_INTERVAL}s"
 
 if [[ -n "${TAGS}" ]]; then
@@ -84,7 +86,7 @@ fi
 curl -fsSL -X POST "${CORE_URL}/api/v1/nodes/register" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${TOKEN}" \
-  -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"tags\":${TAGS_JSON}}"
+  -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"ip_address\":\"${NODE_IP}\",\"tags\":${TAGS_JSON}}"
 
 TMP_ENV="$(mktemp)"
 TMP_BIN="$(mktemp)"
@@ -99,6 +101,7 @@ CORE_URL="${CORE_URL}"
 AUTH_TOKEN="${TOKEN}"
 NODE_NAME="${NODE_NAME}"
 NODE_REGION="${NODE_REGION}"
+NODE_IP="${NODE_IP}"
 TAGS_JSON='${TAGS_JSON}'
 HEARTBEAT_STATUS="${HEARTBEAT_STATUS}"
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL}"
@@ -124,7 +127,7 @@ while true; do
   curl -fsS -X POST "${CORE_URL}/api/v1/nodes/heartbeat" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
-    -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"tags\":${TAGS_JSON},\"status\":\"${STATUS}\",\"metrics\":{\"cpu_percent\":0,\"ram_percent\":0,\"disk_percent\":0,\"network_kbps\":0,\"load_average\":0,\"processes_count\":0}}" \
+    -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"ip_address\":\"${NODE_IP}\",\"tags\":${TAGS_JSON},\"status\":\"${STATUS}\",\"metrics\":{\"cpu_percent\":0,\"ram_percent\":0,\"disk_percent\":0,\"network_kbps\":0,\"load_average\":0,\"processes_count\":0}}" \
     >/dev/null || true
   sleep "${INTERVAL}"
 done
@@ -164,7 +167,7 @@ fi
 curl -fsSL -X POST "${CORE_URL}/api/v1/nodes/heartbeat" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${TOKEN}" \
-  -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"tags\":${TAGS_JSON},\"status\":\"${HEARTBEAT_STATUS}\",\"metrics\":{\"cpu_percent\":0,\"ram_percent\":0,\"disk_percent\":0,\"network_kbps\":0,\"load_average\":0,\"processes_count\":0}}" \
+  -d "{\"name\":\"${NODE_NAME}\",\"region\":\"${NODE_REGION}\",\"ip_address\":\"${NODE_IP}\",\"tags\":${TAGS_JSON},\"status\":\"${HEARTBEAT_STATUS}\",\"metrics\":{\"cpu_percent\":0,\"ram_percent\":0,\"disk_percent\":0,\"network_kbps\":0,\"load_average\":0,\"processes_count\":0}}" \
   >/dev/null || true
 
 echo
