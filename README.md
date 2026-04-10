@@ -141,18 +141,18 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/jobs/job-2/start \
   -d '{"actor":"operator"}'
 ```
 
-## Installer Prototype
+## Auto Installers (Hub + Node)
 
-The repo includes a prototype one-line installer entry point:
+Unified installer:
 
 ```bash
-bash scripts/install-node.sh --token dev-bootstrap-token --core-url http://127.0.0.1:8080 --region ru-central --tags docker,staging
+curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/install.sh | bash -s -- -install hub
+curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/install.sh | bash -s -- -install node <HUB_IP> <BOOTSTRAP_TOKEN>
 ```
 
-Now the installer does the full zero-click flow:
-- Registers node in `Meza-Core`.
-- Installs local heartbeat agent service (`systemd` or background fallback).
-- Starts automatic heartbeat to the hub immediately.
+What it does:
+- `-install hub`: installs Docker stack (`meza-core` + `meza-panel` + SSL proxy), generates tokens, starts services.
+- `-install node`: auto-registers node and starts heartbeat service with no extra clicks.
 
 ## Container Deployment
 

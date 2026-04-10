@@ -129,6 +129,15 @@ docker compose up --build
 
 ## 8. Установка ноды без ручных действий
 
+Единый one-line инсталлер (как ты просил):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/install.sh | bash -s -- -install hub
+curl -fsSL https://raw.githubusercontent.com/ASTRACAT2022/MegaMozg/main/scripts/install.sh | bash -s -- -install node <HUB_IP> <BOOTSTRAP_TOKEN>
+```
+
+Старый локальный скрипт тоже доступен:
+
 One-line установка:
 
 ```bash
