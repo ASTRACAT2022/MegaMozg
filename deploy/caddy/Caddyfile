@@ -1,4 +1,4 @@
-https://localhost:1499 {
+https://{$MEZA_PANEL_TLS_HOST:localhost}:1499 {
   tls internal
   reverse_proxy meza-panel:3000
 }

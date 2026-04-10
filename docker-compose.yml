@@ -25,6 +25,8 @@ services:
 
   meza-panel-ssl:
     image: caddy:2-alpine
+    env_file:
+      - .env
     depends_on:
       - meza-panel
     ports:

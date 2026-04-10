@@ -92,6 +92,7 @@ Important variables:
 - `MEZA_GEMINI_BASE_URL`
 - `MEZA_CORE_BASE_URL`
 - `MEZA_PANEL_OPERATOR_TOKEN`
+- `MEZA_PANEL_TLS_HOST`
 
 ## First Implemented Endpoints
 

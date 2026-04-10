@@ -208,22 +208,22 @@ install_hub() {
   node="$(generate_token)"
   local core_host_port
   core_host_port="$(pick_core_host_port)"
+  local host_ip
+  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -z "${host_ip}" ]]; then
+    host_ip="127.0.0.1"
+  fi
 
   set_env_value_root "${HUB_DIR}/.env" MEZA_OPERATOR_TOKEN "${operator}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_PANEL_OPERATOR_TOKEN "${operator}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_BOOTSTRAP_TOKEN "${bootstrap}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_NODE_TOKEN "${node}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_CORE_HOST_PORT "${core_host_port}"
+  set_env_value_root "${HUB_DIR}/.env" MEZA_PANEL_TLS_HOST "${host_ip}"
   set_env_value_root "${HUB_DIR}/.env" MEZA_CORE_BASE_URL "http://meza-core:8080"
   set_env_value_root "${HUB_DIR}/.env" MEZA_ALLOW_ANONYMOUS_UI "false"
 
   run_as_root docker compose -f "${HUB_DIR}/docker-compose.yml" --env-file "${HUB_DIR}/.env" up -d --build
-
-  local host_ip
-  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [[ -z "${host_ip}" ]]; then
-    host_ip="<HUB_IP>"
-  fi
 
   cat <<EOF
 
