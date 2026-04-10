@@ -84,6 +84,24 @@ export type PanelData = {
   samplePlan: AIPlanResult;
 };
 
+function ensureArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeNode(node: NodeItem): NodeItem {
+  return {
+    ...node,
+    tags: ensureArray(node.tags),
+  };
+}
+
+function normalizeJob(job: JobItem): JobItem {
+  return {
+    ...job,
+    matched_nodes: ensureArray(job.matched_nodes),
+  };
+}
+
 const fallbackData: PanelData = {
   dashboard: {
     total_nodes: 0,
@@ -176,9 +194,9 @@ export async function loadPanelData(): Promise<PanelData> {
 
     return {
       dashboard,
-      nodes: nodes.items,
-      jobs: jobs.items,
-      audit: audit.items.slice(0, 5),
+      nodes: ensureArray(nodes.items).map(normalizeNode),
+      jobs: ensureArray(jobs.items).map(normalizeJob),
+      audit: ensureArray(audit.items).slice(0, 5),
       aiConfig,
       apiReachable: true,
       samplePlan,
